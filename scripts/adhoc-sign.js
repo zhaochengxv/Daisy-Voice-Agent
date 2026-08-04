@@ -60,6 +60,16 @@ async function ensureWinFfmpeg(context) {
 /** 确保 Windows 包内 assets/bin 含 whisper-cli.exe 及依赖 DLL（唤醒词开箱即用） */
 async function ensureWinWhisper(context) {
   const binDir = path.join(context.appOutDir, "resources", "app.asar.unpacked", "assets", "bin");
+
+  // 清理随 assets/** 混入的 macOS 二进制（Mach-O），Windows 上永不调用
+  for (const macBin of ["whisper-cli", "SwitchAudioSource", "yt-dlp"]) {
+    const p = path.join(binDir, macBin);
+    if (fs.existsSync(p)) {
+      fs.rmSync(p, { force: true });
+      console.log(`[adhoc-sign] removed macos binary from win package: ${macBin}`);
+    }
+  }
+
   const target = path.join(binDir, "whisper-cli.exe");
   if (fs.existsSync(target)) return;
 
@@ -70,23 +80,26 @@ async function ensureWinWhisper(context) {
   fs.rmSync(extractDir, { recursive: true, force: true });
   fs.mkdirSync(extractDir, { recursive: true });
 
-  // 用系统解压工具解压 zip（Node 无内置 zip）：7za（electron-builder 缓存）/ unzip / python3
+  // 用系统解压工具解压 zip（Node 无内置 zip）。python3 优先（macOS/Linux 均预装），
+  // 其次 7za/7z（`x -y -o<dir>`），最后 unzip（`-o -d <dir>`，参数语法不同）
   const bin = require("node:child_process");
-  const candidates = [];
-  for (const base of ["7za", "7z", "unzip"]) {
-    try { bin.execSync(`which ${base}`, { stdio: "ignore" }); candidates.push(base); } catch { /* continue */ }
+  let tool = null;
+  try { bin.execSync("which python3", { stdio: "ignore" }); tool = "python3"; } catch { /* continue */ }
+  if (!tool) {
+    for (const base of ["7za", "7z"]) {
+      try { bin.execSync(`which ${base}`, { stdio: "ignore" }); tool = base; break; } catch { /* continue */ }
+    }
   }
-  if (candidates.length === 0) {
-    try { bin.execSync("which python3", { stdio: "ignore" }); candidates.push("python3"); } catch { /* continue */ }
+  if (!tool) {
+    try { bin.execSync("which unzip", { stdio: "ignore" }); tool = "unzip"; } catch { /* continue */ }
   }
-  if (candidates.length === 0) {
-    throw new Error("no zip extractor found (7za/7z/unzip/python3) for whisper inject");
+  if (!tool) {
+    throw new Error("no zip extractor found (python3/7za/7z/unzip) for whisper inject");
   }
 
-  const tool = candidates[0];
   if (tool === "python3") {
     const script = `
-import zipfile, os, sys
+import zipfile, os
 z = zipfile.ZipFile(r"${WHISPER_CACHE_FILE}")
 files = ${JSON.stringify(WHISPER_FILES)}
 os.makedirs(r"${extractDir}", exist_ok=True)
@@ -95,6 +108,8 @@ for n in files:
 `;
     fs.writeFileSync(path.join(extractDir, "extract.py"), script);
     execSync(`python3 ${path.join(extractDir, "extract.py")}`, { stdio: "inherit" });
+  } else if (tool === "unzip") {
+    execSync(`unzip -o -q "${WHISPER_CACHE_FILE}" -d "${extractDir}"`, { stdio: "inherit" });
   } else {
     execSync(`"${tool}" x -y -o"${extractDir}" "${WHISPER_CACHE_FILE}"`, { stdio: "inherit" });
   }
