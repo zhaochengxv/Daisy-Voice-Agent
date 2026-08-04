@@ -11,7 +11,7 @@ function unavailableOnWindows(feature: string): string {
 }
 
 /** WScript.Shell SendKeys 特殊字符转义：+^%~(){}[] 需包在 {} 中 */
-function escapeSendKeys(text: string): string {
+export function escapeSendKeys(text: string): string {
   return text.replace(/([+^%~(){}\[\]])/g, "{$1}").replace(/\{(\})\}/g, "{$1}");
 }
 
@@ -45,8 +45,7 @@ export async function getDefaultBrowserProgId(): Promise<string> {
   }
 }
 
-function progIdToBrowserName(progId: string): string {
-  const map: Record<string, string> = {
+export function progIdToBrowserName(progId: string): string {  const map: Record<string, string> = {
     ChromeHTML: "Google Chrome",
     MSEdgeHTM: "Microsoft Edge",
     FirefoxURL: "Firefox",
@@ -148,30 +147,35 @@ Add-Type -AssemblyName System.Windows.Forms
   }
 }
 
+/** 将快捷键描述（如 "ctrl+shift+a"）映射为 SendKeys 序列（如 "^+a"），纯函数便于单测 */
+export function buildSendKeys(keys: string): string {
+  const normalized = keys.toLowerCase().replace(/\s+/g, "");
+  const parts = normalized.split("+");
+  const mainKey = parts[parts.length - 1];
+  const modifiers = parts.slice(0, -1);
+
+  const prefix = modifiers
+    .map((m) => (m === "control" || m === "ctrl" ? "^" : m === "option" || m === "alt" ? "%" : m === "shift" ? "+" : m === "win" || m === "command" || m === "cmd" ? "%" : ""))
+    .join("");
+
+  let keyPart: string;
+  if (mainKey.length === 1) {
+    keyPart = mainKey;
+  } else if (WIN_KEY_MAP[mainKey]) {
+    keyPart = WIN_KEY_MAP[mainKey];
+  } else {
+    keyPart = mainKey;
+  }
+
+  return prefix + keyPart;
+}
+
 export async function pressKeys(keys: string): Promise<string> {
   try {
-    const normalized = keys.toLowerCase().replace(/\s+/g, "");
-    const parts = normalized.split("+");
-    const mainKey = parts[parts.length - 1];
-    const modifiers = parts.slice(0, -1);
-
-    const prefix = modifiers
-      .map((m) => (m === "control" || m === "ctrl" ? "^" : m === "option" || m === "alt" ? "%" : m === "shift" ? "+" : m === "win" || m === "command" || m === "cmd" ? "%" : ""))
-      .join("");
-
-    let keyPart: string;
-    if (mainKey.length === 1) {
-      keyPart = mainKey;
-    } else if (WIN_KEY_MAP[mainKey]) {
-      keyPart = WIN_KEY_MAP[mainKey];
-    } else {
-      keyPart = mainKey;
-    }
-
     const script = `
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.SendKeys]::SendWait($env:DAISY_ARG0)`;
-    await runPowerShell(script, { args: [prefix + keyPart] });
+    await runPowerShell(script, { args: [buildSendKeys(keys)] });
     return `已发送快捷键 ${keys}`;
   } catch {
     return "发送快捷键失败";
