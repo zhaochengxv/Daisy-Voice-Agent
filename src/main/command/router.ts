@@ -6,6 +6,8 @@ import { log, logError } from "../utils/logger";
 import { getBundledBin } from "../config/env";
 import { runAppleScript } from "../utils/appleScript";
 import { switchAudioOutput as sharedSwitchAudioOutput } from "../utils/audioSwitch";
+import { isWindows } from "../utils/windowsShell";
+import * as win from "../control/windows";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -429,9 +431,13 @@ async function openKnownSiteSearch(search: KnownSiteSearch): Promise<CommandResu
   // default browser to the site's own results page.  It does not depend on
   // an LLM decision or on a native app being installed.
   try {
-    await new Promise<void>((resolve, reject) => {
-      execFile("open", [search.url], (error) => error ? reject(error) : resolve());
-    });
+    if (isWindows()) {
+      await execFileAsync("explorer.exe", [search.url]);
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        execFile("open", [search.url], (error) => error ? reject(error) : resolve());
+      });
+    }
     log(`CommandRouter: opened ${search.siteName} search for "${search.query}"`);
     return { handled: true, action: `search:${search.siteName}:${search.query}` };
   } catch (error) {
@@ -442,9 +448,13 @@ async function openKnownSiteSearch(search: KnownSiteSearch): Promise<CommandResu
 
 async function openKnownSiteHome(site: { siteName: string; url: string }): Promise<CommandResult> {
   try {
-    await new Promise<void>((resolve, reject) => {
-      execFile("open", [site.url], (error) => error ? reject(error) : resolve());
-    });
+    if (isWindows()) {
+      await execFileAsync("explorer.exe", [site.url]);
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        execFile("open", [site.url], (error) => error ? reject(error) : resolve());
+      });
+    }
     log(`CommandRouter: opened ${site.siteName} home page`);
     return { handled: true, action: `open-site:${site.siteName}` };
   } catch (error) {
@@ -455,7 +465,18 @@ async function openKnownSiteHome(site: { siteName: string; url: string }): Promi
 
 async function openApp(name: string): Promise<CommandResult> {
   const isBrowserKeyword = ["browser", "默认浏览器", "浏览器", "default_browser", "default browser"].includes(name.trim().toLowerCase());
-  
+
+  if (isWindows()) {
+    try {
+      const result = await win.openApplication(name);
+      log(`CommandRouter: opened app (Windows): ${result}`);
+      return { handled: true, action: `open:${name}` };
+    } catch (e) {
+      log(`CommandRouter: failed to open ${name} on Windows`);
+      return { handled: false };
+    }
+  }
+
   if (isBrowserKeyword) {
     try {
       const { getDefaultBrowserBundleId } = require("../control/macos");
@@ -489,6 +510,21 @@ const BROWSER_APP_NAMES = [
 ];
 
 async function quitAllBrowsers(): Promise<CommandResult> {
+  if (isWindows()) {
+    let quitCount = 0;
+    for (const browserName of BROWSER_APP_NAMES) {
+      const result = await win.quitApplication(browserName);
+      if (result && !result.includes("无法关闭")) {
+        quitCount++;
+      }
+      log(`CommandRouter: quit browser (Windows) ${browserName}: ${result}`);
+    }
+    if (quitCount > 0) {
+      return { handled: true, action: `quit:browsers(${quitCount})` };
+    }
+    return { handled: false };
+  }
+
   let quitCount = 0;
   for (const browserName of BROWSER_APP_NAMES) {
     try {
@@ -515,6 +551,16 @@ async function quitApp(name: string): Promise<CommandResult> {
   // Special case: "浏览器" → quit ALL running browsers
   if (name === "浏览器" || name === "browser" || name === "browsers") {
     return await quitAllBrowsers();
+  }
+
+  if (isWindows()) {
+    try {
+      const result = await win.quitApplication(name);
+      log(`CommandRouter: quit app (Windows): ${result}`);
+      return { handled: true, action: `quit:${name}` };
+    } catch {
+      return { handled: false };
+    }
   }
 
   const app = matchApp(name);
@@ -558,6 +604,15 @@ async function quitApp(name: string): Promise<CommandResult> {
 }
 
 async function setVolume(direction: "up" | "down" | "mute"): Promise<CommandResult> {
+  if (isWindows()) {
+    try {
+      const result = await win.setVolume(direction);
+      log(`CommandRouter: volume ${direction} (Windows): ${result}`);
+      return { handled: true, action: `volume:${direction}` };
+    } catch {
+      return { handled: false };
+    }
+  }
   try {
     if (direction === "mute") {
       await runAppleScript("set volume with output muted");
@@ -576,6 +631,15 @@ async function setVolume(direction: "up" | "down" | "mute"): Promise<CommandResu
 }
 
 async function controlPlayback(action: "playpause" | "next" | "prev"): Promise<CommandResult> {
+  if (isWindows()) {
+    try {
+      const result = await win.controlPlayback(action);
+      log(`CommandRouter: playback ${action} (Windows): ${result}`);
+      return { handled: true, action: `playback:${action}` };
+    } catch {
+      return { handled: false };
+    }
+  }
   try {
     const keyMap: Record<string, number> = {
       playpause: 49,
@@ -593,6 +657,14 @@ async function controlPlayback(action: "playpause" | "next" | "prev"): Promise<C
 }
 
 async function setDoNotDisturb(enable: boolean): Promise<CommandResult> {
+  if (isWindows()) {
+    try {
+      const result = await win.setDoNotDisturb(enable);
+      return { handled: true, action: `dnd:${enable ? "on" : "off"}` };
+    } catch {
+      return { handled: false };
+    }
+  }
   const targetVal = enable ? 1 : 0;
   const script = `
 tell application "System Events"
@@ -638,6 +710,14 @@ end tell
 }
 
 async function minimizeAllWindowsExcept(exceptName: string): Promise<CommandResult> {
+  if (isWindows()) {
+    try {
+      const result = await win.minimizeAllWindowsExcept(exceptName);
+      return { handled: true, action: `window:minimize-except:${exceptName}` };
+    } catch {
+      return { handled: false };
+    }
+  }
   const app = matchApp(exceptName);
   const keepAppName = app ? app.name : exceptName;
 
@@ -665,6 +745,14 @@ end tell
 }
 
 async function minimizeApp(appName: string): Promise<CommandResult> {
+  if (isWindows()) {
+    try {
+      const result = await win.minimizeApp(appName);
+      return { handled: true, action: `window:minimize-app:${appName}` };
+    } catch {
+      return { handled: false };
+    }
+  }
   const app = matchApp(appName);
   const targetName = app ? app.name : appName;
 
@@ -690,6 +778,14 @@ end tell
 }
 
 async function splitScreen(leftName: string, rightName: string): Promise<CommandResult> {
+  if (isWindows()) {
+    try {
+      const result = await win.splitScreen(leftName, rightName);
+      return { handled: true, action: `window:split-screen:${leftName}:${rightName}` };
+    } catch {
+      return { handled: false };
+    }
+  }
   const leftApp = matchApp(leftName);
   const rightApp = matchApp(rightName);
   
@@ -787,6 +883,10 @@ export function isSaveClipboardImageToDesktopCommand(text: string): boolean {
 }
 
 async function switchAudioOutput(target: string): Promise<CommandResult> {
+  if (isWindows()) {
+    // Windows 无 SwitchAudioSource 等价物，直接返回未处理（走 LLM 降级提示）
+    return { handled: false };
+  }
   const result = await sharedSwitchAudioOutput(target);
   if (!result.device) {
     return { handled: false };
@@ -916,7 +1016,11 @@ export async function tryLocalCommand(text: string): Promise<CommandResult> {
   if (/^(?:电脑|把电脑|笔记本)?\s*(?:锁屏|息屏|锁屏幕|黑屏|锁定屏幕|屏幕关闭|关闭屏幕|休眠屏幕)(?:\s*(?:吧|一下|了))?$/.test(normalized)
     || /^(?:锁屏|息屏|锁屏幕|黑屏)$/.test(normalized)) {
     try {
-      await execAsync("pmset displaysleepnow");
+      if (isWindows()) {
+        await win.lockScreen();
+      } else {
+        await execAsync("pmset displaysleepnow");
+      }
       return { handled: true, action: "screen:sleep" };
     } catch {
       return { handled: false };

@@ -10,6 +10,8 @@ import { matchApp } from "../command/router";
 import { getBundledBin, config } from "../config/env";
 import { runAppleScript } from "../utils/appleScript";
 import { switchAudioOutput as sharedSwitchAudioOutput } from "../utils/audioSwitch";
+import { isWindows } from "../utils/windowsShell";
+import * as win from "./windows";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -49,6 +51,7 @@ export async function getDefaultBrowserBundleId(): Promise<string> {
 }
 
 export async function openApplication(name: string): Promise<string> {
+  if (isWindows()) return win.openApplication(name);
   let target = name;
   let useBundleId = false;
 
@@ -88,6 +91,7 @@ export async function openApplication(name: string): Promise<string> {
 }
 
 export async function quitApplication(name: string): Promise<string> {
+  if (isWindows()) return win.quitApplication(name);
   try {
     let targetName = name;
     const isBrowserKeyword = ["browser", "默认浏览器", "浏览器", "default_browser", "default browser"].includes(name.trim().toLowerCase());
@@ -156,6 +160,7 @@ export async function quitApplication(name: string): Promise<string> {
 }
 
 export async function quitAllApplications(excludeNames: string[] = []): Promise<string> {
+  if (isWindows()) return win.quitAllApplications(excludeNames);
   try {
     const defaultExcludes = ["Finder", "Terminal", "iTerm", "iTerm2", "Diri", "Daisy", "Xcode"];
     const allExcludes = Array.from(new Set([...defaultExcludes, ...excludeNames]));
@@ -183,6 +188,7 @@ end repeat
 }
 
 export async function typeText(text: string): Promise<string> {
+  if (isWindows()) return win.typeText(text);
   try {
     const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     await runAppleScript(`tell application "System Events" to keystroke "${escaped}"`);
@@ -193,6 +199,7 @@ export async function typeText(text: string): Promise<string> {
 }
 
 export async function pressKeys(keys: string): Promise<string> {
+  if (isWindows()) return win.pressKeys(keys);
   try {
     const normalized = keys.toLowerCase().replace(/\s+/g, "");
     const parts = normalized.split("+");
@@ -247,6 +254,7 @@ export async function pressKeys(keys: string): Promise<string> {
 }
 
 export async function getFrontmostApplication(): Promise<string> {
+  if (isWindows()) return win.getFrontmostApplication();
   try {
     const name = await runAppleScript(
       'tell application "System Events" to get name of first application process whose frontmost is true',
@@ -258,6 +266,7 @@ export async function getFrontmostApplication(): Promise<string> {
 }
 
 export async function readSelectedText(): Promise<string> {
+  if (isWindows()) return win.readSelectedText();
   try {
     // Save current clipboard (may fail if clipboard has non-text content)
     let originalClipboard = "";
@@ -302,6 +311,7 @@ export async function readSelectedText(): Promise<string> {
 }
 
 export async function getClipboardText(): Promise<string> {
+  if (isWindows()) return win.getClipboardText();
   try {
     const text = await runAppleScript("get the clipboard as text");
     return text.trim() || "剪贴板为空，或不包含文本内容。";
@@ -322,6 +332,7 @@ export async function writeClipboardText(text: string): Promise<string> {
 }
 
 export async function sendEmail(to: string, subject: string, body: string): Promise<string> {
+  if (isWindows()) return win.sendEmail(to, subject, body);
   const script = `
 tell application "Mail"
     try
@@ -350,6 +361,7 @@ end tell
 }
 
 export async function readUnreadEmails(limit: number = 5): Promise<string> {
+  if (isWindows()) return win.readUnreadEmails(limit);
   const script = `
 tell application "Mail"
     try
@@ -389,6 +401,7 @@ end tell
 }
 
 export async function getRecentEmails(limit: number = 5): Promise<string> {
+  if (isWindows()) return win.getRecentEmails(limit);
   const script = `
 tell application "Mail"
     try
@@ -431,6 +444,7 @@ end tell
 }
 
 export async function searchEmails(query: string, limit: number = 5): Promise<string> {
+  if (isWindows()) return win.searchEmails(query, limit);
   const script = `
 tell application "Mail"
     try
@@ -494,6 +508,7 @@ export async function readFile(filePath: string): Promise<string> {
     const ext = path.extname(resolved).toLowerCase();
     let content: string;
     if (ext === ".docx" || ext === ".doc") {
+      if (isWindows()) return win.readFileDocx(resolved);
       const { stdout } = await execFileAsync("textutil", ["-convert", "txt", "-stdout", resolved]);
       content = stdout;
     } else {
@@ -584,6 +599,7 @@ export async function downloadMedia(url: string, type: string = "video", destina
     log(`downloadMedia: starting download for ${url} (type: ${type}) to saveDir: ${saveDir}`);
 
     const ytdlpPath = getBundledBin("yt-dlp");
+    const ytdlpBin = isWindows() && !ytdlpPath.toLowerCase().endsWith(".exe") ? ytdlpPath + ".exe" : ytdlpPath;
     const args: string[] = ["--newline", "-P", saveDir];
     if (type === "audio") {
       args.push("-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", "%(title)s.%(ext)s");
@@ -592,10 +608,10 @@ export async function downloadMedia(url: string, type: string = "video", destina
     }
     args.push(url);
 
-    log(`downloadMedia: running command: ${ytdlpPath} ${args.join(" ")}`);
+    log(`downloadMedia: running command: ${ytdlpBin} ${args.join(" ")}`);
 
     // 后台执行：不阻塞 LLM 工具循环，进度/错误输出仅在日志记录
-    const child = spawn(ytdlpPath, args, {
+    const child = spawn(ytdlpBin, args, {
       detached: true,
       stdio: "ignore",
     });
@@ -654,6 +670,14 @@ const DANGEROUS_SHELL_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   { re: /\b(iptables|ip6tables|nft\b|ufw|firewall-cmd|firewalld)/i, reason: "防火墙规则变更" },
   // 卷管理
   { re: /\b(lvm|pvcreate|vgcreate|lvcreate|pvmove|vgremove|lvremove)\b/i, reason: "逻辑卷管理" },
+  // Windows 磁盘/系统破坏性操作
+  { re: /\b(del|erase)\s+\/(?:s|q)+\b/i, reason: "批量删除文件" },
+  { re: /\b(rd|rmdir)\s+\/s\b/i, reason: "递归删除目录" },
+  { re: /\bformat\s+[a-z]:/i, reason: "磁盘格式化" },
+  { re: /\bdiskpart\b/i, reason: "磁盘分区管理" },
+  { re: /\breg\s+delete\b/i, reason: "删除注册表项" },
+  { re: /\bwmic\s+logicaldisk\s+delete\b/i, reason: "删除磁盘分区" },
+  { re: /\btaskkill\s+\/f\s+\/im\s+(?:explorer|svchost|wininit|csrss)\.exe\b/i, reason: "强杀系统关键进程" },
 ];
 
 export function isDangerousShellCommand(command: string): string | null {
@@ -697,6 +721,7 @@ export async function runShellCommand(command: string): Promise<string> {
 }
 
 export async function createNote(title: string, body: string): Promise<string> {
+  if (isWindows()) return win.createNote(title, body);
   try {
     // 双层转义：\ 与 " 都要转，防止 \" 组合绕过字符串字面量
     const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -723,6 +748,7 @@ export async function createNote(title: string, body: string): Promise<string> {
 }
 
 export async function searchNotes(query: string): Promise<string> {
+  if (isWindows()) return win.searchNotes(query);
   try {
     const escaped = query.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const result = await runAppleScript(`
@@ -741,6 +767,7 @@ export async function searchNotes(query: string): Promise<string> {
 }
 
 export async function createReminder(title: string, dueDate?: string, notes?: string): Promise<string> {
+  if (isWindows()) return win.createReminder(title, dueDate, notes);
   try {
     const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const escapedNotes = notes ? notes.replace(/\\/g, "\\\\").replace(/"/g, '\\"') : "";
@@ -780,6 +807,7 @@ export async function createReminder(title: string, dueDate?: string, notes?: st
 }
 
 export async function createCalendarEvent(title: string, startDate: string, endDate?: string, location?: string, notes?: string): Promise<string> {
+  if (isWindows()) return win.createCalendarEvent(title, startDate, endDate, location, notes);
   try {
     const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const escapedLocation = location ? location.replace(/\\/g, "\\\\").replace(/"/g, '\\"') : "";
@@ -862,6 +890,7 @@ export async function createCalendarEvent(title: string, startDate: string, endD
 }
 
 export async function getCalendarEvents(days: number): Promise<string> {
+  if (isWindows()) return win.getCalendarEvents(days);
   try {
     const result = await runAppleScript(`
       tell application "Calendar"
@@ -883,6 +912,7 @@ export async function getCalendarEvents(days: number): Promise<string> {
 }
 
 export async function setTimer(seconds: number): Promise<string> {
+  if (isWindows()) return win.setTimer(seconds);
   try {
     const safeSeconds = Math.max(1, Math.floor(seconds));
     const mins = Math.floor(safeSeconds / 60);
@@ -910,6 +940,7 @@ function appleScriptQuote(text: string): string {
 }
 
 export async function setAlarm(time: string, label?: string): Promise<string> {
+  if (isWindows()) return win.setAlarm(time, label);
   try {
     const parts = time.trim().split(/[\s/]/);
     const datePart = parts[0].split("-");
@@ -962,6 +993,7 @@ export async function setAlarm(time: string, label?: string): Promise<string> {
 }
 
 export async function searchMaps(query: string): Promise<string> {
+  if (isWindows()) return win.searchMaps(query);
   try {
     await execFileAsync("open", ["maps://?q=" + encodeURIComponent(query)]);
     return `已在地图中搜索「${query}」`;
@@ -971,6 +1003,7 @@ export async function searchMaps(query: string): Promise<string> {
 }
 
 export async function openUrl(url: string): Promise<string> {
+  if (isWindows()) return win.openUrl(url);
   try {
     let finalUrl = url.trim();
     if (!/^https?:\/\//.test(finalUrl)) {
@@ -985,6 +1018,7 @@ export async function openUrl(url: string): Promise<string> {
 }
 
 export async function switchAudioOutput(deviceName: string): Promise<string> {
+  if (isWindows()) return win.switchAudioOutput(deviceName);
   const result = await sharedSwitchAudioOutput(deviceName);
   if (!result.device) {
     const available = result.available.length > 0 ? `。当前可用设备：${result.available.join("、")}` : "";
@@ -1127,6 +1161,10 @@ async function htmlToPdfViaElectron(htmlPath: string, pdfPath: string): Promise<
 }
 
 export async function convertDocument(source: string, target: string): Promise<string> {
+  if (isWindows()) {
+    // Windows 无 textutil / 系统级文档转换工具链，降级提示
+    return "文档互转功能当前仅支持 macOS（依赖 textutil 工具链）。";
+  }
   try {
     const src = expandPath(source);
     const dst = expandPath(target);
@@ -1195,6 +1233,10 @@ export async function editDocument(
   color?: string, pageStart?: number, pageEnd?: number,
   code?: string
 ): Promise<string> {
+  if (isWindows()) {
+    // Windows 依赖 python3 + docx 库，工具链路径差异大，降级提示
+    return "文档编辑功能当前仅支持 macOS。";
+  }
   try {
     const src = expandPath(source);
     const dst = expandPath(target);
@@ -1341,6 +1383,10 @@ export async function editPdf(
   query?: string, anchor?: string, text?: string, color?: string,
   fontsize?: number, mode?: string, replaceWith?: string
 ): Promise<string> {
+  if (isWindows()) {
+    // Windows 依赖 python3 + PyMuPDF(fitz) 库，工具链路径差异大，降级提示
+    return "PDF 编辑功能当前仅支持 macOS。";
+  }
   try {
     const src = expandPath(source);
     const dst = expandPath(target);

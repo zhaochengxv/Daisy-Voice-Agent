@@ -1,5 +1,6 @@
 import { log, logError } from "../utils/logger";
 import { runAppleScript } from "../utils/appleScript";
+import { isWindows } from "../utils/windowsShell";
 
 /**
  * 音量守卫：录制期间静音系统 + 暂停 Chrome 媒体，空闲时恢复。
@@ -17,6 +18,11 @@ export class VolumeGuard {
   private activeMutePromise: Promise<void> | null = null;
 
   async muteSystemAndPauseMedia(): Promise<void> {
+    // Windows：无 AppleScript Chrome 暂停与系统静音等价物，静默跳过
+    if (isWindows()) {
+      log("VolumeControl: skipping system mute (Windows has no equivalent)");
+      return;
+    }
     if (this.activeMutePromise) {
       return this.activeMutePromise;
     }
@@ -103,6 +109,7 @@ export class VolumeGuard {
   }
 
   async unmuteSystemOnly(): Promise<void> {
+    if (isWindows()) return;
     if (this.activeMutePromise) {
       log("VolumeControl: waiting for active mute operation to complete first...");
       await this.activeMutePromise;
@@ -120,6 +127,7 @@ export class VolumeGuard {
   }
 
   async restoreMediaOnly(): Promise<void> {
+    if (isWindows()) return;
     if (this.activeMutePromise) {
       log("VolumeControl: waiting for active mute operation to complete first...");
       await this.activeMutePromise;

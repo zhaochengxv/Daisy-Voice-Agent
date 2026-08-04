@@ -24,15 +24,19 @@ import { tryLocalCommand, initCommandRouter } from "./command/router";
 import { log, logError } from "./utils/logger";
 import { cleanTextForTTS } from "./utils/textClean";
 import { runAppleScript } from "./utils/appleScript";
+import { isWindows } from "./utils/windowsShell";
 import { VolumeGuard } from "./control/volumeGuard";
 import { ConversationHistory } from "./history";
 
 {
-  const pathParts = (process.env.PATH || "").split(":").filter(Boolean);
-  for (const p of ["/opt/homebrew/bin", "/usr/local/bin"]) {
-    if (!pathParts.includes(p)) pathParts.unshift(p);
+  // 仅在 macOS 补充 Homebrew 路径；Windows PATH 以 ; 分隔，跳过避免破坏环境变量
+  if (!isWindows()) {
+    const pathParts = (process.env.PATH || "").split(":").filter(Boolean);
+    for (const p of ["/opt/homebrew/bin", "/usr/local/bin"]) {
+      if (!pathParts.includes(p)) pathParts.unshift(p);
+    }
+    process.env.PATH = pathParts.join(":");
   }
-  process.env.PATH = pathParts.join(":");
 }
 
 const execFileAsync = promisify(execFile);
@@ -41,6 +45,13 @@ const AUTO_HIDE_TIMEOUT_MS = 15000; // 答案播完停留 15s 供阅读，再自
 const CONVERSATION_EXPIRE_MS = 5 * 60 * 1000; // 5 minutes
 
 function playSound(name: string): void {
+  if (isWindows()) {
+    // Windows 用 PowerShell 播放系统提示音
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[console]::beep(880, 180)"], () => {
+      // ignore — 系统提示音播放失败不影响主流程
+    });
+    return;
+  }
   execFile("afplay", [`/System/Library/Sounds/${name}.aiff`], () => {
     // ignore — 系统提示音播放失败不影响主流程
   });
@@ -163,7 +174,11 @@ function setupWakeWord(): void {
   let whisperAvailable = fs.existsSync(whisperBin);
   if (!whisperAvailable) {
     try {
-      require("child_process").execSync("which whisper-cli", { stdio: "ignore" });
+      if (isWindows()) {
+        require("child_process").execSync("where whisper-cli", { stdio: "ignore" });
+      } else {
+        require("child_process").execSync("which whisper-cli", { stdio: "ignore" });
+      }
       whisperAvailable = true;
     } catch {}
   }
@@ -1399,7 +1414,11 @@ function setupIpc(): void {
     let cliInstalled = whisperCli !== "whisper-cli" && fs.existsSync(whisperCli);
     if (!cliInstalled) {
       try {
-        await execFileAsync("which", ["whisper-cli"]);
+        if (isWindows()) {
+          await execFileAsync("where", ["whisper-cli"]);
+        } else {
+          await execFileAsync("which", ["whisper-cli"]);
+        }
         cliInstalled = true;
       } catch { /* not installed */ }
     }

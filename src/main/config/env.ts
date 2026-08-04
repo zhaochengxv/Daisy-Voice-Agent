@@ -129,15 +129,18 @@ export function getWhisperModelPath(modelName?: string): string {
 export function getBundledBin(name: string): string {
   const appPath = app?.getAppPath?.() || "";
   const bundled = path.join(appPath, "assets", "bin", name);
+  // Windows 下可执行文件带 .exe 后缀
+  const exeSuffix = process.platform === "win32" ? ".exe" : "";
   const candidates = [
     ...(appPath.includes(".asar") ? [bundled.replace(".asar", ".asar.unpacked")] : []),
     bundled,
+    ...(exeSuffix ? [bundled + exeSuffix] : []),
     "/opt/homebrew/bin/" + name,
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
   }
-  return name; // fallback to PATH
+  return name + exeSuffix; // fallback to PATH
 }
 
 export function getWhisperBackendName(cpuModel = os.cpus()[0]?.model || ""): string | null {

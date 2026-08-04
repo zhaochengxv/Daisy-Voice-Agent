@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-`Daisy` 是一个 macOS 上的 AI 语音助手，支持快捷键 and 语音唤醒两种交互方式。
+`Daisy` 是一个 macOS 与 Windows 双平台 AI 语音助手，支持快捷键 and 语音唤醒两种交互方式。
 
 - **快捷键模式**：按住右侧 Option 说话，松手自动发送（带 150ms 防抖）
 - **语音唤醒模式**：喊 "嘿 Daisy" 唤醒，唤醒后自动监听，3 秒静音自动发送
@@ -12,6 +12,7 @@
 - **语音播报**：Microsoft Edge TTS（流式断句，边生成边朗读，播放/打断后自动删除临时音频缓存，绝无残留）
 - **本地命令路由**：打开/关闭应用、音量控制等固定指令零延迟直接执行，不调大模型。其中“浏览器”关键字能智能锁定并打开系统默认浏览器
 - **系统控制**：42 个工具，覆盖高清壁纸搜索/下载、文件操作、备忘录、提醒事项、日历、计时器、闹钟、地图、天气、网页搜索、视频/文档处理、邮件等
+- **Windows 支持**：核心循环（录音→ASR→LLM→TTS→UI）单实现跨平台；系统控制层按平台分派——Windows 用 PowerShell/user32 等价实现（开关应用、音量、播放控制、锁屏、剪贴板、计时器/闹钟等），无等价物的 macOS 专属能力（邮件/备忘录/提醒/日历/文档编辑/分屏/音频输出切换等）降级为「当前仅支持 macOS」提示。
 
 ## 目录结构
 
@@ -37,13 +38,14 @@ src/
 │   │   ├── streamTts.ts       # 流式断句 TTS 队列（generation 代际隔离）
 │   │   └── pipeline.ts        # TTS 管道
 │   ├── command/
-│   │   └── router.ts          # 本地命令路由器（应用索引 + 中英文模糊别名匹配 + 浏览器专属防错）
+│   │   └── router.ts          # 本地命令路由器（应用索引 + 中英文模糊别名匹配 + 浏览器专属防错，Windows 分支分派）
 │   ├── control/
-│   │   ├── macos.ts           # AppleScript 系统控制 + 42 工具执行分发（危险命令拦截）
+│   │   ├── macos.ts           # AppleScript 系统控制 + 42 工具执行分发（危险命令拦截，含 Windows 分派分支）
+│   │   ├── windows.ts         # Windows 系统控制层（PowerShell/user32 等价实现 + 降级提示）
 │   │   ├── search.ts          # DuckDuckGo/Firecrawl 搜索 + Wallhaven 壁纸（fetch 超时）
 │   │   ├── weather.ts         # wttr.in 天气查询
 │   │   ├── sports.ts          # 体育赛程查询
-│   │   └── volumeGuard.ts     # 系统音量状态守卫
+│   │   └── volumeGuard.ts     # 系统音量状态守卫（Windows 跳过）
 │   ├── wakeword/
 │   │   └── monitor.ts         # 唤醒词监控（whisper.cpp + VAD 语音活动检测）
 │   ├── shortcut/
@@ -55,6 +57,7 @@ src/
 │   └── utils/
 │       ├── logger.ts          # 文件日志
 │       ├── appleScript.ts     # AppleScript 统一执行入口（execFile + stdin，无 shell）
+│       ├── windowsShell.ts    # PowerShell 统一执行入口（execFile + env 传参，无 shell）
 │       ├── audioSwitch.ts     # 音频输出设备切换（execFile 数组参数）
 │       └── textClean.ts       # 文本清理工具
 ├── preload/index.ts           # contextBridge 桥接 diriAPI
@@ -78,10 +81,21 @@ npm run build        # 编译 TypeScript + 构建悬浮球 + 复制静态渲染�
 npm run dev          # 构建并启动（开发模式）
 npm run pack         # 打包 .app（不签名）
 npm run dist:mac     # 打包 macOS .app + .dmg
+npm run dist:win     # 打包 Windows NSIS 安装包（x64，需在 Windows 环境执行）
 
 # 安装并覆盖到 /Applications
 npm run pack && rm -rf /Applications/Daisy.app && cp -R releases/mac-arm64/Daisy.app /Applications/Daisy.app && open /Applications/Daisy.app
 ```
+
+## Windows 适配说明
+
+- **平台分派点**：`src/main/control/macos.ts` 每个导出的工具函数都以 `if (isWindows()) return win.xxx(...)` 开头分派到 `src/main/control/windows.ts`；本地命令路由 `src/main/command/router.ts` 同样按平台分派。
+- **Windows 等价能力**：开关应用（Start-Process / CloseMainWindow）、音量（user32 keybd_event）、媒体播放（虚拟媒体键）、锁屏（rundll32 LockWorkStation）、剪贴板、计时器/闹钟（派生独立 powershell + console.beep）、网页/地图跳转（explorer.exe / bingmaps:）。
+- **降级提示**：邮件、备忘录、提醒、日历、文档编辑/转换、PDF 编辑、分屏、音频输出切换、勿扰模式在 Windows 返回「当前仅支持 macOS」。
+- **安全模型**：PowerShell 统一入口 `runPowerShell` 用 execFile + 数组参数 + 无 shell，用户输入经 `DAISY_ARG0..n` 环境变量传入，杜绝拼接注入；15s 默认超时。
+- **音量守卫**：`VolumeGuard` 在 Windows 直接跳过（无 Chrome AppleScript 等价物）。
+- **唤醒词**：Windows 上 whisper-cli 需以 `whisper-cli.exe` 形式随包分发或加入 PATH（`getBundledBin` 自动补 `.exe` 后缀）。
+- **Windows 打包**：electron-builder `win` 目标已配置（NSIS x64）；`scripts/adhoc-sign.js` 仅在 macOS 构建时执行 codesign。
 
 ## 配置
 
