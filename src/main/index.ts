@@ -14,7 +14,7 @@ import { initAudioRecorder, startRecording, stopRecording, getIsRecording, setWa
 import { AsrSession } from "./asr";
 import { WhisperAsrSession } from "./asr/whisper";
 import { DeepSeekClient, DualChannel } from "./llm/deepseek";
-import { ConversationManager } from "./llm/conversation";
+import { ConversationManager, prefetchDesktopPath } from "./llm/conversation";
 import { EdgeTTSPlayer, startTTSCleanup } from "./tts/edgeTTS";
 import { TtsPipeline } from "./tts/pipeline";
 import { StreamTts } from "./tts/streamTts";
@@ -86,6 +86,8 @@ app.whenReady().then(() => {
     app.setLoginItemSettings({ openAtLogin: true });
   }
   startTTSCleanup();
+  // Windows 异步预取真实桌面路径（OneDrive 重定向），供 LLM 环境信息使用
+  prefetchDesktopPath().catch(() => {});
   initialize();
 });
 

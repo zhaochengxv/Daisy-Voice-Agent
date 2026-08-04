@@ -8,6 +8,23 @@ const MAX_HISTORY_MESSAGES = 20;
 const MAX_HISTORY_TOKENS_ESTIMATE = 20000;
 
 /**
+ * Windows 真实桌面路径缓存（OneDrive 已知文件夹重定向时 ~/Desktop 不存在）。
+ * 同步的 getSystemPromptWithEnv 无法 await，因此由 index.ts 启动时异步预取填入缓存。
+ */
+let cachedDesktopPath: string | null = null;
+
+export async function prefetchDesktopPath(): Promise<void> {
+  if (!isWindows() || cachedDesktopPath) return;
+  try {
+    const { getWindowsDesktopPath } = await import("../control/windows");
+    const real = await getWindowsDesktopPath();
+    if (real) cachedDesktopPath = real;
+  } catch {
+    // keep null → fallback ~/Desktop
+  }
+}
+
+/**
  * 粗略 token 估算：中英混合启发式。
  * 中文/全角字符按 1 token/字符，连续 ASCII 按 4 字符/1 token，
  * 比「1 token ≈ 4 字符」对所有语言的统一假设更贴合 DeepSeek 的 BPE 分词。
@@ -43,7 +60,7 @@ function getSystemPromptWithEnv(): string {
   try {
     const username = os.userInfo().username;
     const homedir = os.homedir();
-    const desktop = path.join(homedir, "Desktop");
+    const desktop = cachedDesktopPath || path.join(homedir, "Desktop");
     const now = new Date();
     const weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
     const weekday = weekdays[now.getDay()];

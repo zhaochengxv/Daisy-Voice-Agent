@@ -8,7 +8,7 @@
     "build": "tsc && npm run copy-renderer && npm run build:settings",
     "build:watch": "tsc --watch",
     "build:settings": "vite build --config vite.settings.config.ts",
-    "copy-renderer": "rm -rf dist/renderer && cp -R src/renderer dist/renderer",
+    "copy-renderer": "node scripts/copy-renderer.js",
     "dev": "npm run build && electron .",
     "start": "electron .",
     "pack": "npm run build && electron-builder --dir",
