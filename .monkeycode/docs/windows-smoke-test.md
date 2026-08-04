@@ -13,7 +13,7 @@
 | 场景 | 预期 | 通过 |
 |------|------|------|
 | 设置窗口标题栏 | Windows 显示原生标题栏（可拖动/关闭/最小化），无 40px 顶部留白遮挡 | ☐ |
-| LLM 工具描述 | 邮件/备忘录/日历/文档/PDF 编辑等工具描述带「当前仅支持 macOS」标注，LLM 不误用 | ☐ |
+| LLM 工具描述 | 仅 edit_pdf 带「仅支持 macOS」标注；邮件/备忘录/日历/文档等已实现工具带 Outlook/Word 依赖说明 | ☐ |
 | 系统提示词 | 排除进程列表显示 explorer 而非 Finder，无 AppleScript 指引 | ☐ |
 | TTS 音频播放 | `file:///C:/...` URL 正确加载 MP3（Windows 反斜杠路径已转换） | ☐ |
 | 无黑色控制台窗口 | 每次命令（开关应用/音量/剪贴板/计时器等）执行时不弹出 cmd/PowerShell 黑窗（windowsHide 已全局处理） | ☐ |
@@ -76,6 +76,19 @@
 | 最小化窗口 | PowerShell ShowWindow minimize | ☐ |
 | 最小化除XX外所有窗口 | 按 MainWindowHandle 过滤，排除 explorer/daisy | ☐ |
 | 邮件/日历/文档（未装 Office） | 返回「未检测到 Outlook/Word，请安装 Microsoft 365」提示 | ☐ |
+
+## 高风险验证项（真机必须重点确认）
+
+这些实现依赖未公开 COM 接口或平台时序行为，沙箱无法验证，冒烟时优先：
+
+| 场景 | 风险点 | 通过 |
+|------|--------|------|
+| switch_audio_output | IPolicyConfig 是未公开 COM 接口，vtable 顺序靠社区定义，部分 Win 版本可能调用失败；失败时核对返回的错误信息 | ☐ |
+| get_calendar_events | 已改 [datetime] 强类型遍历（绕开 Restrict 日期区域差异），确认非美区 Windows 正常返回 | ☐ |
+| read_unread_emails 等 | SenderName/Subject 为 null 时兜底为「(未知)/(无主题)」，确认格式稳定 | ☐ |
+| 左右分屏 | WScript.Shell.AppActivate 对中文窗口标题匹配可能偏差，确认能激活 | ☐ |
+| send_email | Outlook 可能弹「程序正在尝试发送邮件」安全提示，确认自动发送或记录提示 | ☐ |
+| 剪贴板操作 | Get/Set-Clipboard + -STA 时序，确认 type_text / read_selected_text 中文与还原正常 | ☐ |
 
 ## 注意事项
 
