@@ -115,6 +115,13 @@
       "shortcutName": "Daisy",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "zhaochengxv",
+        "repo": "Daisy-Voice-Agent"
+      }
+    ]
   }
 }

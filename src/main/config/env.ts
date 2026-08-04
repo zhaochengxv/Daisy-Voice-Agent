@@ -93,21 +93,24 @@ export const config = {
   autoLaunch: process.env.AUTO_LAUNCH === "true",
 };
 
-export const WHISPER_MODELS: Record<string, { label: string; size: string; url: string }> = {
+export const WHISPER_MODELS: Record<string, { label: string; size: string; url: string; mirror: string }> = {
   "ggml-tiny.bin": {
     label: "Tiny (39MB, 最快)",
     size: "39MB",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+    mirror: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
   },
   "ggml-base.bin": {
     label: "Base (142MB, 推荐)",
     size: "142MB",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    mirror: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
   },
   "ggml-small.bin": {
     label: "Small (466MB, 最准)",
     size: "466MB",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+    mirror: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
   },
 };
 

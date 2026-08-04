@@ -1199,68 +1199,113 @@ function downloadWhisperModel(modelName: string): void {
   }
 
   sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 0, status: "开始下载..." });
-  log(`Downloading whisper model: ${modelName} from ${modelInfo.url}`);
+  log(`Downloading whisper model: ${modelName}`);
 
-  // 支持多级 301/302 重定向（HF -> CloudFront）
-  const requestWithRedirect = (url: string, hops: number) => {
-    if (hops > 5) {
-      handleDownloadError(new Error("重定向次数过多"), modelPath);
-      return;
-    }
-    https
-      .get(url, (response) => {
-        if (
-          (response.statusCode === 301 || response.statusCode === 302 || response.statusCode === 307) &&
-          response.headers.location
-        ) {
-          const redirectUrl = response.headers.location;
-          response.resume(); // 消耗掉响应体
-          requestWithRedirect(redirectUrl, hops + 1);
-          return;
-        }
-        if (response.statusCode !== 200) {
-          handleDownloadError(new Error(`HTTP ${response.statusCode}`), modelPath);
-          return;
-        }
-        const file = fs.createWriteStream(modelPath);
-        handleDownloadResponse(response, file, modelPath, modelName);
-      })
-      .on("error", (err) => handleDownloadError(err, modelPath));
+  // 官方 huggingface.co 在国内常不可达/超时；失败自动切 hf-mirror.com 镜像，
+  // 支持断点续传（保留已下载字节）+ 多级重定向 + 30s 连接超时
+  let useMirror = false;
+
+  const fail = (err: Error): void => {
+    try { if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath); } catch { /* ignore */ }
+    sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 0, status: `下载失败: ${err.message}` });
+    logError("Whisper model download failed", err);
   };
 
-  requestWithRedirect(modelInfo.url, 0);
-}
-
-function handleDownloadResponse(response: any, file: fs.WriteStream, modelPath: string, modelName: string): void {
-  const totalBytes = parseInt(response.headers["content-length"] || "0", 10);
-  let receivedBytes = 0;
-
-  response.pipe(file);
-
-  response.on("data", (chunk: Buffer) => {
-    receivedBytes += chunk.length;
-    if (totalBytes > 0) {
-      const percent = Math.round((receivedBytes / totalBytes) * 100);
-      sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent, status: `下载中 ${percent}%` });
+  const attempt = (url: string, offset: number, isMirror: boolean): void => {
+    if (!isMirror && !useMirror) {
+      // 首次尝试官方源；仅在真正失败时才切镜像（镜像判定放在错误回调）
     }
-  });
+    const file = fs.createWriteStream(modelPath, { flags: offset > 0 ? "a" : "w" });
+    let received = offset;
+    let done = false;
 
-  file.on("finish", () => {
-    file.close();
-    config.whisper.model = modelName;
-    sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 100, status: "下载完成" });
-    log(`Whisper model downloaded: ${modelPath}`);
-  });
+    const headers: Record<string, string> = {};
+    if (offset > 0) headers["Range"] = `bytes=${offset}-`;
 
-  file.on("error", (err) => {
-    handleDownloadError(err, modelPath);
-  });
-}
+    const req = https.get(url, { headers }, (response) => {
+      if (
+        (response.statusCode === 301 || response.statusCode === 302 || response.statusCode === 307) &&
+        response.headers.location
+      ) {
+        response.resume();
+        file.close();
+        if (done) return;
+        attempt(response.headers.location, offset, isMirror);
+        return;
+      }
+      // 服务器忽略 Range（返回 200）时从头重下
+      if (offset > 0 && response.statusCode === 200) {
+        response.resume();
+        file.close();
+        if (done) return;
+        fs.rmSync(modelPath, { force: true });
+        attempt(url, 0, isMirror);
+        return;
+      }
+      if (response.statusCode !== 200 && response.statusCode !== 206) {
+        response.resume();
+        file.close();
+        if (done) return;
+        done = true;
+        if (!isMirror) {
+          useMirror = true;
+          sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 0, status: "官方源失败，切换镜像..." });
+          attempt(modelInfo.mirror, 0, true);
+        } else {
+          fail(new Error(`HTTP ${response.statusCode}`));
+        }
+        return;
+      }
 
-function handleDownloadError(err: Error, modelPath: string): void {
-  logError("Whisper model download failed", err);
-  try { if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath); } catch { /* ignore */ }
-  sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 0, status: `下载失败: ${err.message}` });
+      const totalBytes = parseInt(response.headers["content-length"] || "0", 10) + offset;
+      response.pipe(file);
+      response.on("data", (chunk: Buffer) => {
+        received += chunk.length;
+        if (totalBytes > 0) {
+          const percent = Math.min(99, Math.round((received / totalBytes) * 100));
+          sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, {
+            percent,
+            status: `下载中 ${percent}%${isMirror ? "（镜像源）" : ""}`,
+          });
+        }
+      });
+    });
+
+    req.on("error", (err) => {
+      file.close();
+      if (done) return;
+      done = true;
+      if (!isMirror) {
+        useMirror = true;
+        sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 0, status: "官方源失败，切换镜像..." });
+        attempt(modelInfo.mirror, 0, true);
+      } else {
+        fail(err);
+      }
+    });
+    req.setTimeout(30000, () => {
+      req.destroy(new Error("连接超时"));
+    });
+
+    file.on("error", (err) => {
+      if (done) return;
+      done = true;
+      if (!isMirror) {
+        useMirror = true;
+        attempt(modelInfo.mirror, 0, true);
+      } else {
+        fail(err);
+      }
+    });
+    file.on("finish", () => {
+      file.close();
+      config.whisper.model = modelName;
+      sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 100, status: "下载完成" });
+      log(`Whisper model downloaded: ${modelPath}`);
+    });
+  };
+
+  attempt(modelInfo.url, 0, false);
 }
 
 function setupIpc(): void {
@@ -1528,7 +1573,12 @@ function setupIpc(): void {
       return { updateAvailable, currentVersion: current, latestVersion: latest, releaseNotes: result.updateInfo.releaseNotes || "" };
     } catch (error: any) {
       logError("Update check failed", error);
-      return { updateAvailable: false, currentVersion: app.getVersion(), error: error?.message || String(error) };
+      const msg = error?.message || String(error);
+      // 未发布 latest.yml 或网络不可达时的友好提示，避免暴露原始技术报错
+      const friendly = /latest\.yml|404|publish|GitHub|getLatestVersion/i.test(msg)
+        ? "当前版本未配置更新源或更新源不可达，请手动到 GitHub Releases 下载最新版"
+        : msg;
+      return { updateAvailable: false, currentVersion: app.getVersion(), error: friendly };
     }
   });
 

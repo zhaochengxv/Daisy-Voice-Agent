@@ -212,8 +212,9 @@ diriAPI.onTtsPlay((filePath) => {
   currentAudioPath = filePath;
 
   const loadStartTime = performance.now();
-  // 构造跨平台 file:// URL：Windows 反斜杠路径转正斜杠（file:///C:/...），macOS 保留绝对路径
-  const fileUrl = "file:///" + String(filePath).split("\\").join("/").replace(/^\/+/, "");
+  // 构造跨平台 file:// URL：Windows 反斜杠转正斜杠（file:///C:/...），
+  // 再 encodeURI 处理中文/空格等特殊字符（Windows 用户名常为中文）
+  const fileUrl = encodeURI("file:///" + String(filePath).split("\\").join("/").replace(/^\/+/, ""));
   currentAudio = new Audio(fileUrl);
   logToMain(`[TTS_PERF] Audio Loaded (instantiation took ${(performance.now() - loadStartTime).toFixed(1)}ms): ${filePath}`);
 

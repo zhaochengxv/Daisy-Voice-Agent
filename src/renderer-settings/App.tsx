@@ -502,6 +502,16 @@ export default function App() {
                             placeholder="volc.seedasr.sauc.duration" className="glass-input" />
                         </div>
                       </div>
+                      <div className="liquid-glass p-5 rounded-[22px] flex flex-col gap-2 mt-4">
+                        <h4 className="text-sm font-semibold text-slate-800">参数获取步骤</h4>
+                        <ol className="text-[12px] text-slate-500 leading-relaxed list-decimal list-inside flex flex-col gap-1.5">
+                          <li>注册并登录 <a href="https://console.volcengine.com" target="_blank" rel="noopener noreferrer" className="text-slate-600 hover:text-slate-800 font-medium hover:underline">火山引擎控制台</a>，完成实名认证</li>
+                          <li>在左侧菜单进入「语音技术」→「录音文件识别」服务（或直接打开上方「获取」链接），点击「开通服务」</li>
+                          <li>开通后创建应用，在应用的「访问令牌」页面查看 <b>App ID</b> 与 <b>Access Token</b>，复制粘贴到上方对应输入框</li>
+                          <li><b>Resource ID</b> 使用默认值 <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded">volc.seedasr.sauc.duration</code> 即可（流式音频识别）</li>
+                          <li>保存后点击左下角「保存」按钮生效；配置成功后状态栏「云端 ASR」会点亮</li>
+                        </ol>
+                      </div>
                     </div>
                     <div className="liquid-glass p-5 rounded-[22px] flex items-center justify-between">
                       <div className="flex flex-col gap-1 pr-4">

@@ -2,6 +2,8 @@ import path from "node:path";
 import { BrowserWindow, screen } from "electron";
 import { IPC_CHANNELS } from "../ipc/channels";
 import { log } from "../utils/logger";
+import { isWindows } from "../utils/windowsShell";
+import { getSettingsWindow, createSettingsWindow } from "./settingsWindow";
 
 const ORB_SIZE = 92;
 
@@ -56,9 +58,16 @@ export function createFloatWindow(): BrowserWindow {
   // Do not use Electron's system-wide content protection here. It also hides
   // the orb from third-party screen recorders such as Screen Studio. Daisy's
   // own full-screen capture path hides the orb only for that single frame.
+  // macOS：悬浮球为纯状态指示，鼠标穿透不挡操作。
+  // Windows：无 dock 图标，悬浮球兼作交互入口，允许点击/拖动，点击打开设置。
   floatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   floatWindow.setAlwaysOnTop(true, "screen-saver");
-  floatWindow.setIgnoreMouseEvents(true);
+  if (isWindows()) {
+    floatWindow.setIgnoreMouseEvents(false);
+    floatWindow.setMovable(true);
+  } else {
+    floatWindow.setIgnoreMouseEvents(true);
+  }
 
   floatWindow.webContents.on("render-process-gone", (_event, details) => {
     console.error("Float window render process gone:", details);
