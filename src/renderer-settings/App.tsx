@@ -644,12 +644,12 @@ export default function App() {
                       </div>
                       {!whisperCliInstalled && (
                         <p className="text-[11px] text-slate-400 leading-relaxed">
-                          唤醒词依赖 whisper-cli。请从
-                          <a href="https://github.com/ggerganov/whisper.cpp/releases" target="_blank" rel="noopener noreferrer"
+                          唤醒词依赖 whisper-cli。安装包已内置 whisper-cli.exe，若仍显示未安装，请从
+                          <a href="https://github.com/ggml-org/whisper.cpp/releases" target="_blank" rel="noopener noreferrer"
                             className="text-slate-600 hover:text-slate-800 font-medium hover:underline"> whisper.cpp Releases </a>
-                          下载 Windows 版（whisper-cli-x64.zip），解压出 whisper-cli.exe 放入安装目录
-                          <code className="text-slate-600 bg-slate-100 px-1 py-0.5 rounded">resources/app.asar.unpacked/assets/bin/</code>，
-                          或把 whisper-cli.exe 加入系统 PATH。
+                          下载 <code className="text-slate-600 bg-slate-100 px-1 py-0.5 rounded">whisper-bin-x64.zip</code>，
+                          解压出 Release 目录下的 whisper-cli.exe 和全部 ggml-*.dll / whisper.dll，放入安装目录
+                          <code className="text-slate-600 bg-slate-100 px-1 py-0.5 rounded">resources\app.asar.unpacked\assets\bin\</code>。
                         </p>
                       )}
                       <div className="flex items-center justify-between">

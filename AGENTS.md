@@ -105,7 +105,7 @@ npm run pack && rm -rf /Applications/Daisy.app && cp -R releases/mac-arm64/Daisy
 - **降级提示**：邮件/日历/文档编辑/转换在 Windows 已实现 Outlook/Word COM（未安装 Office 时返回引导提示）；PDF 编辑（Windows 无免费内置方案）返回「仅支持 macOS」。
 - **安全模型**：PowerShell 统一入口 `runPowerShell` 用 execFile + 数组参数 + 无 shell，用户输入经 `DAISY_ARG0..n` 环境变量传入，杜绝拼接注入；15s 默认超时。
 - **音量守卫**：`VolumeGuard` 在 Windows 直接跳过（无 Chrome AppleScript 等价物）。
-- **唤醒词**：Windows 上 whisper-cli 需以 `whisper-cli.exe` 形式随包分发或加入 PATH（`getBundledBin` 自动补 `.exe` 后缀）。
+- **唤醒词**：Windows 安装包已由 afterPack 钩子注入 `whisper-bin-x64.zip` 解压出的 `whisper-cli.exe` + 依赖 DLL 到 `assets/bin`，开箱即用；macOS 经 `brew install whisper-cpp`。
 - **Windows 打包**：electron-builder `win` 目标已配置（NSIS x64）；`scripts/adhoc-sign.js` 仅在 macOS 构建时执行 codesign。
 
 ## 配置
