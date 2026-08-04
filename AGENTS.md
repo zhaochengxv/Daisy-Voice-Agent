@@ -98,7 +98,7 @@ npm run pack && rm -rf /Applications/Daisy.app && cp -R releases/mac-arm64/Daisy
 
 - **平台分派点**：`src/main/control/macos.ts` 每个导出的工具函数都以 `if (isWindows()) return win.xxx(...)` 开头分派到 `src/main/control/windows.ts`；本地命令路由 `src/main/command/router.ts` 同样按平台分派。
 - **Windows 等价能力**：开关应用（Start-Process / CloseMainWindow）、音量（user32 keybd_event）、媒体播放（虚拟媒体键）、锁屏（rundll32 LockWorkStation）、剪贴板、计时器/闹钟/提醒（派生独立 powershell + console.beep）、备忘录（~/Documents/Daisy备忘录/*.md）、网页/地图跳转（explorer.exe / bingmaps:）、左右分屏（AppActivate + Win+方向键 Snap）、勿扰（注册表静音通知）、音频输出切换（Core Audio API）。
-- **降级提示**：邮件、日历、文档编辑/转换、PDF 编辑在 Windows 返回「当前仅支持 macOS」（待接入 Outlook/Word COM）。
+- **降级提示**：邮件/日历/文档编辑/转换在 Windows 已实现 Outlook/Word COM（未安装 Office 时返回引导提示）；PDF 编辑（Windows 无免费内置方案）返回「仅支持 macOS」。
 - **安全模型**：PowerShell 统一入口 `runPowerShell` 用 execFile + 数组参数 + 无 shell，用户输入经 `DAISY_ARG0..n` 环境变量传入，杜绝拼接注入；15s 默认超时。
 - **音量守卫**：`VolumeGuard` 在 Windows 直接跳过（无 Chrome AppleScript 等价物）。
 - **唤醒词**：Windows 上 whisper-cli 需以 `whisper-cli.exe` 形式随包分发或加入 PATH（`getBundledBin` 自动补 `.exe` 后缀）。

@@ -869,11 +869,29 @@ export interface ToolResult {
 /**
  * macOS 专属、Windows 返回降级提示的工具名
  */
-export const MAC_ONLY_TOOLS = [
-  "send_email", "read_unread_emails", "get_recent_emails", "search_emails",
-  "create_calendar_event", "get_calendar_events",
-  "convert_document", "edit_document", "edit_pdf",
-];
+export const MAC_ONLY_TOOLS = ["edit_pdf"];
+
+/**
+ * Windows 平台工具描述替换：去除「macOS 应用」误导表述，改为 Windows 等价能力描述。
+ * 这些工具在 Windows 已实现等价功能（或依赖 Outlook/Word COM），LLM 应正常调用。
+ */
+const WINDOWS_TOOL_DESCRIPTIONS: Record<string, string> = {
+  open_application: "打开指定的本地应用程序。仅在最终目标是打开应用本身时使用；访问网站或网站内搜索应直接调用 open_url 打开最终 URL，不要先打开浏览器。",
+  quit_application: "关闭指定的应用程序",
+  create_note: "创建一条新备忘录（保存为 ~/Documents/Daisy备忘录/*.md 文件）",
+  search_notes: "在备忘录目录（~/Documents/Daisy备忘录）中搜索包含指定关键词的笔记",
+  create_reminder: "创建一条新提醒，可设置提醒时间（到期播放蜂鸣提示音）",
+  create_calendar_event: "在 Outlook 日历中创建一个新事件（需安装 Outlook）",
+  get_calendar_events: "获取 Outlook 日历中接下来指定天数内的事件（需安装 Outlook）",
+  search_maps: "在地图应用中搜索地点",
+  get_clipboard_text: "获取用户当前系统剪贴板（Clipboard）中的纯文本内容",
+  send_email: "通过 Outlook 发送邮件（to, subject, body；需安装 Outlook）",
+  read_unread_emails: "通过 Outlook 获取未读邮件（需安装 Outlook）",
+  get_recent_emails: "通过 Outlook 获取最新邮件（需安装 Outlook）",
+  search_emails: "通过 Outlook 搜索邮件（需安装 Outlook）",
+  convert_document: "转换文档格式（doc/docx/rtf/txt/html/pdf/odt 互转；经 Word，需安装 Microsoft Office）",
+  edit_document: "编辑 .docx 文档（删除指定颜色文本；经 Word，需安装 Microsoft Office）",
+};
 
 /**
  * 纯函数：按平台标记 macOS 专属工具的 description，便于单测。
@@ -883,21 +901,31 @@ export function adaptToolsForPlatform(tools: ToolDefinition[], isWindowsPlatform
   const macOnly = new Set(MAC_ONLY_TOOLS);
   return tools.map((tool) => {
     const name = tool.function.name;
-    if (!macOnly.has(name)) return tool;
-    return {
-      ...tool,
-      function: {
-        ...tool.function,
-        description: `${tool.function.description}（当前仅支持 macOS）`,
-      },
-    };
+    if (macOnly.has(name)) {
+      return {
+        ...tool,
+        function: {
+          ...tool.function,
+          description: `${tool.function.description}（当前仅支持 macOS）`,
+        },
+      };
+    }
+    const winDesc = WINDOWS_TOOL_DESCRIPTIONS[name];
+    if (winDesc) {
+      return {
+        ...tool,
+        function: { ...tool.function, description: winDesc },
+      };
+    }
+    return tool;
   });
 }
 
 /**
  * 按平台返回适配后的工具定义：
  * - Windows 上把 macOS 专属工具的 description 标记为「当前仅支持 macOS」，
- *   避免 LLM 误导用户调用注定返回降级提示的工具。
+ *   避免 LLM 误导用户调用注定返回降级提示的工具；
+ * - 已实现 Windows 等价能力的工具替换为 Windows 描述，提示依赖（Outlook/Word）。
  */
 export function getPlatformTools(): ToolDefinition[] {
   return adaptToolsForPlatform(availableTools, isWindows());

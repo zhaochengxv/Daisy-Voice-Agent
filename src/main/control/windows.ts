@@ -442,22 +442,101 @@ export async function readFileDocx(filePath: string): Promise<string> {
   return unavailableOnWindows("读取 .docx 文档为纯文本");
 }
 
-// ── macOS 专属应用的 Windows 降级 ──
+// ── Outlook/Word COM：检测到 Office 用 COM，未安装返回引导提示 ──
 
-export async function sendEmail(_to: string, _subject: string, _body: string): Promise<string> {
-  return unavailableOnWindows("发送邮件（Mail）");
+const OFFICE_NOT_FOUND = "未检测到 Outlook/Word，请安装 Microsoft 365 后重试。";
+
+function isNoOfficeError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /RPC|0x800706ba|0x80080005|未找到|failed to create|New-Object|could not/i.test(msg);
 }
 
-export async function readUnreadEmails(_limit: number = 5): Promise<string> {
-  return unavailableOnWindows("读取未读邮件（Mail）");
+export async function sendEmail(to: string, subject: string, body: string): Promise<string> {
+  try {
+    const script = `
+try {
+  $outlook = New-Object -ComObject Outlook.Application
+} catch { Write-Output "NO_OUTLOOK"; exit }
+$mail = $outlook.CreateItem(0)
+$mail.To = $env:DAISY_ARG0
+$mail.Subject = $env:DAISY_ARG1
+$mail.Body = $env:DAISY_ARG2
+$mail.Send()
+Write-Output "OK"`;
+    const result = await runPowerShell(script, { args: [to, subject, body], timeoutMs: 60000 });
+    if (result.includes("NO_OUTLOOK")) return OFFICE_NOT_FOUND;
+    if (result.trim() === "OK") {
+      return `已成功发送邮件给「${to}」，主题：「${subject}」。`;
+    }
+    return `发送邮件失败: ${result}`;
+  } catch (error) {
+    return isNoOfficeError(error) ? OFFICE_NOT_FOUND : `发送邮件出错: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
-export async function getRecentEmails(_limit: number = 5): Promise<string> {
-  return unavailableOnWindows("读取最新邮件（Mail）");
+async function readEmails(kind: "unread" | "recent" | "search", query: string, limit: number): Promise<string> {
+  const filterClause = kind === "unread"
+    ? `$outline = "FROM:" + $m.SenderName + "|SUBJECT:" + $m.Subject
+    if ($m.UnRead) { $results += $outline }`
+    : kind === "search"
+      ? `$outline = "FROM:" + $m.SenderName + "|SUBJECT:" + $m.Subject
+    if ($m.Subject -and $m.Subject.Contains($env:DAISY_ARG2)) { $results += $outline }`
+      : `$outline = "FROM:" + $m.SenderName + "|SUBJECT:" + $m.Subject
+    $results += $outline`;
+  try {
+    const script = `
+try {
+  $outlook = New-Object -ComObject Outlook.Application
+  $ns = $outlook.GetNamespace("MAPI")
+  $inbox = $ns.GetDefaultFolder(6)
+  $items = $inbox.Items
+  $items.Sort("[ReceivedTime]", $true)
+  $results = @()
+  $checked = 0
+  $limit = [int]$env:DAISY_ARG1
+  for ($i = 1; $i -le $items.Count; $i++) {
+    if ($results.Count -ge $limit) { break }
+    if ($checked -ge 200) { break }
+    $checked++
+    try {
+      $m = $items.Item($i)
+      ${filterClause}
+    } catch { }
+  }
+  if ($results.Count -eq 0) { Write-Output "NONE" }
+  else { $results | ForEach-Object { Write-Output $_ } }
+} catch { Write-Output "NO_OUTLOOK" }`;
+    const result = await runPowerShell(script, { args: ["", String(limit), query], timeoutMs: 60000 });
+    if (result.includes("NO_OUTLOOK")) return OFFICE_NOT_FOUND;
+    if (result.trim() === "NONE" || !result.trim()) return "NONE";
+    return result.trim().split("\n").map((line) => {
+      const m = /^FROM:(.*)\|SUBJECT:(.*)$/.exec(line);
+      return m ? `  发件人: ${m[1]}\n  主题: ${m[2]}` : line;
+    }).join("\n\n");
+  } catch (error) {
+    return isNoOfficeError(error) ? OFFICE_NOT_FOUND : `读取邮件出错: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
-export async function searchEmails(_query: string, _limit: number = 5): Promise<string> {
-  return unavailableOnWindows("搜索邮件（Mail）");
+export async function readUnreadEmails(limit: number = 5): Promise<string> {
+  const result = await readEmails("unread", "", limit);
+  if (result === OFFICE_NOT_FOUND) return result;
+  if (result === "NONE") return "没有未读邮件。";
+  return result;
+}
+
+export async function getRecentEmails(limit: number = 5): Promise<string> {
+  const result = await readEmails("recent", "", limit);
+  if (result === OFFICE_NOT_FOUND) return result;
+  if (result === "NONE") return "收件箱为空。";
+  return result;
+}
+
+export async function searchEmails(query: string, limit: number = 5): Promise<string> {
+  const result = await readEmails("search", query, limit);
+  if (result === OFFICE_NOT_FOUND) return result;
+  if (result === "NONE") return `没有找到主题包含「${query}」的邮件`;
+  return result;
 }
 
 const NOTES_DIR_NAME = "Daisy备忘录";
@@ -542,12 +621,80 @@ export async function createReminder(title: string, dueDate?: string, _notes?: s
   }
 }
 
-export async function createCalendarEvent(_title: string, _startDate: string, _endDate?: string, _location?: string, _notes?: string): Promise<string> {
-  return unavailableOnWindows("创建日历事件（Calendar）");
+/** Windows 创建日历事件：Outlook COM 日历文件夹新建 AppointmentItem */
+export async function createCalendarEvent(
+  title: string, startDate: string, endDate?: string, location?: string, notes?: string
+): Promise<string> {
+  try {
+    const start = new Date(startDate);
+    if (isNaN(start.getTime())) return `日历事件开始时间格式无效：${startDate}`;
+    const end = endDate && endDate.trim() ? new Date(endDate) : new Date(start.getTime() + 60 * 60 * 1000);
+    if (isNaN(end.getTime())) return `日历事件结束时间格式无效：${endDate}`;
+
+    const script = `
+try {
+  $outlook = New-Object -ComObject Outlook.Application
+  $ns = $outlook.GetNamespace("MAPI")
+  $cal = $ns.GetDefaultFolder(9)
+  $appt = $cal.Items.Add(1)
+  $appt.Subject = $env:DAISY_ARG0
+  $appt.Start = [datetime]$env:DAISY_ARG1
+  $appt.End = [datetime]$env:DAISY_ARG2
+  $appt.Location = $env:DAISY_ARG3
+  $appt.Body = $env:DAISY_ARG4
+  $appt.Save()
+  Write-Output "OK"
+} catch { Write-Output "NO_OUTLOOK" }`;
+    const result = await runPowerShell(script, {
+      args: [title, start.toISOString(), end.toISOString(), location || "", notes || ""],
+      timeoutMs: 60000,
+    });
+    if (result.includes("NO_OUTLOOK")) return OFFICE_NOT_FOUND;
+    const endStr = `${end.getMonth() + 1}月${end.getDate()}日 ${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
+    return `已在日历创建事件「${title}」（${endStr} 结束）`;
+  } catch (error) {
+    return isNoOfficeError(error) ? OFFICE_NOT_FOUND : `创建日历事件失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
-export async function getCalendarEvents(_days: number): Promise<string> {
-  return unavailableOnWindows("查看日历事件（Calendar）");
+/** Windows 查看日历事件：Outlook COM 日历文件夹按时间范围列出 */
+export async function getCalendarEvents(days: number = 7): Promise<string> {
+  try {
+    const now = new Date();
+    const end = new Date(now.getTime() + Math.max(1, days) * 24 * 60 * 60 * 1000);
+    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const script = `
+try {
+  $outlook = New-Object -ComObject Outlook.Application
+  $ns = $outlook.GetNamespace("MAPI")
+  $cal = $ns.GetDefaultFolder(9)
+  $items = $cal.Items
+  $items.IncludeRecurrences = $true
+  $items.Sort("[Start]", $true)
+  $filter = "[Start] >= '${fmt(now)}' AND [Start] <= '${fmt(end)}'"
+  $filtered = $items.Restrict($filter)
+  $results = @()
+  $limit = 0
+  foreach ($evt in $filtered) {
+    if ($limit -ge 20) { break }
+    $limit++
+    try {
+      $results += ("EVT:" + $evt.Subject + "|" + $evt.Start.ToString("MM-dd HH:mm") + "|" + $evt.Location)
+    } catch { }
+  }
+  if ($results.Count -eq 0) { Write-Output "NONE" }
+  else { $results | ForEach-Object { Write-Output $_ } }
+} catch { Write-Output "NO_OUTLOOK" }`;
+    const result = await runPowerShell(script, { timeoutMs: 60000 });
+    if (result.includes("NO_OUTLOOK")) return OFFICE_NOT_FOUND;
+    if (result.trim() === "NONE" || !result.trim()) return `未来 ${days} 天内没有日历事件`;
+    return result.trim().split("\n").map((line) => {
+      const m = /^EVT:(.*)\|(.*)\|(.*)$/.exec(line);
+      return m ? `${m[2]}  ${m[1]}${m[3] ? `（${m[3]}）` : ""}` : line;
+    }).join("\n");
+  } catch (error) {
+    return isNoOfficeError(error) ? OFFICE_NOT_FOUND : `查看日历失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
 /** Windows 切换音频输出设备：Core Audio API 枚举渲染端点并设默认（无需第三方工具） */
@@ -858,6 +1005,107 @@ Write-Output "OK"`;
     return enable ? "已开启勿扰模式（所有应用通知已静音）" : "已关闭勿扰模式（通知恢复）";
   } catch {
     return unavailableOnWindows("勿扰/专注模式");
+  }
+}
+
+/** Windows 文档互转：Word COM 打开源文件后 SaveAs 目标格式；txt/md 纯文本直转不经 Word */
+export async function convertDocument(source: string, target: string): Promise<string> {
+  try {
+    const fs = require("node:fs");
+    const expand = (p: string): string => p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : path.resolve(p);
+    const src = expand(source);
+    const dst = expand(target);
+    if (!fs.existsSync(src)) return `找不到源文件「${source}」`;
+
+    const srcExt = path.extname(src).toLowerCase();
+    const dstExt = path.extname(dst).toLowerCase();
+    const isText = (e: string) => e === ".txt" || e === ".md";
+    const targetExt = dstExt || ".txt";
+
+    // 纯文本互转（txt/md 双向）：不依赖 Word，直接读写
+    if (isText(srcExt) && isText(targetExt)) {
+      fs.writeFileSync(dst, fs.readFileSync(src, "utf8"), "utf8");
+      return `已转换文档，保存至「${path.basename(dst)}」`;
+    }
+
+    const fmtMap: Record<string, number> = {
+      ".txt": 2, ".html": 8, ".htm": 8, ".rtf": 6,
+      ".pdf": 17, ".doc": 0, ".docx": 16, ".odt": 23,
+    };
+    const fmt = fmtMap[targetExt] ?? 16;
+    const openAsText = isText(srcExt);
+
+    const script = `
+try { $word = New-Object -ComObject Word.Application } catch { Write-Output "NO_WORD"; exit }
+$word.Visible = $false
+$word.DisplayAlerts = 0
+$doc = $word.Documents.Open($env:DAISY_ARG0, $false, $false, $false, "", "", $false, "", "", ${openAsText ? 7 : 0}, 0, $false)
+$doc.SaveAs2($env:DAISY_ARG1, ${fmt})
+$doc.Close(0)
+$word.Quit()
+Write-Output "OK"`;
+    const result = await runPowerShell(script, { args: [src, dst], timeoutMs: 90000 });
+    if (result.includes("NO_WORD")) return OFFICE_NOT_FOUND;
+    if (result.trim() === "OK") return `已转换文档，保存至「${path.basename(dst)}」`;
+    return `文档转换失败: ${result}`;
+  } catch (error) {
+    return isNoOfficeError(error) ? OFFICE_NOT_FOUND : `文档转换失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/** Windows 编辑 .docx：Word COM 实现 remove_colored_text（按颜色删除）；run_code 依赖 python 工具链，降级 */
+export async function editDocument(
+  source: string, target: string, operation: string,
+  color?: string, _pageStart?: number, _pageEnd?: number, _code?: string
+): Promise<string> {
+  try {
+    const fs = require("node:fs");
+    const expand = (p: string): string => p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : path.resolve(p);
+    const src = expand(source);
+    const dst = expand(target);
+    if (!fs.existsSync(src)) return `找不到源文件「${source}」`;
+    if (path.extname(src).toLowerCase() !== ".docx") return `edit_document 仅支持 .docx 文件`;
+
+    if (operation === "remove_colored_text") {
+      const hex = (color || "FF0000").replace(/[^0-9A-Fa-f]/g, "").toUpperCase().padStart(6, "0");
+      const script = `
+try { $word = New-Object -ComObject Word.Application } catch { Write-Output "NO_WORD"; exit }
+$word.Visible = $false
+$word.DisplayAlerts = 0
+$doc = $word.Documents.Open($env:DAISY_ARG0, $false, $false)
+$hex = $env:DAISY_ARG2
+$r = [Convert]::ToInt32($hex.Substring(0,2),16)
+$g = [Convert]::ToInt32($hex.Substring(2,2),16)
+$b = [Convert]::ToInt32($hex.Substring(4,2),16)
+$wdColor = $b*65536 + $g*256 + $r
+$sel = $word.Selection
+[void]$sel.HomeKey(6)
+[void]$sel.Find.ClearFormatting()
+$sel.Find.Font.Color = $wdColor
+$sel.Find.Text = ""
+$sel.Find.Wrap = 1
+$count = 0
+while ($sel.Find.Execute()) {
+  [void]$sel.Delete()
+  $count++
+}
+$doc.SaveAs2($env:DAISY_ARG1, 16)
+$doc.Close(0)
+$word.Quit()
+Write-Output ("DELETED:" + $count)`;
+      const result = await runPowerShell(script, { args: [src, dst, hex], timeoutMs: 90000 });
+      if (result.includes("NO_WORD")) return OFFICE_NOT_FOUND;
+      const m = /DELETED:(\d+)/.exec(result);
+      const count = m ? Number(m[1]) : 0;
+      return `已删除 ${count} 处 ${hex} 色文本，保存至「${path.basename(dst)}」`;
+    }
+
+    if (operation === "run_code") {
+      return "run_code 操作当前仅支持 macOS（依赖 python-docx 工具链）。";
+    }
+    return `不支持的操作类型：${operation}`;
+  } catch (error) {
+    return isNoOfficeError(error) ? OFFICE_NOT_FOUND : `文档编辑失败: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 

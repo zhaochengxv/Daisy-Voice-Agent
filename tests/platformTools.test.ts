@@ -36,4 +36,29 @@ describe("adaptToolsForPlatform", () => {
       expect(names.has(name), `tool ${name} missing from availableTools`).toBe(true);
     }
   });
+
+  it("Windows 平台给已实现等价功能的工具替换 Windows 描述", () => {
+    const adapted = adaptToolsForPlatform(availableTools, true);
+    const checks: Array<[string, (d: string) => boolean]> = [
+      ["create_note", (d) => d.includes("Daisy备忘录")],
+      ["create_reminder", (d) => d.includes("蜂鸣")],
+      ["create_calendar_event", (d) => d.includes("Outlook")],
+      ["convert_document", (d) => d.includes("Word")],
+      ["send_email", (d) => d.includes("Outlook")],
+    ];
+    for (const [name, predicate] of checks) {
+      const tool = adapted.find((t) => t.function.name === name);
+      expect(tool, `tool ${name} should exist`).toBeDefined();
+      expect(predicate(tool!.function.description), `${name} description should be Windows-specific`).toBe(true);
+    }
+  });
+
+  it("Windows 平台已实现工具不再带仅支持 macOS 标注", () => {
+    const adapted = adaptToolsForPlatform(availableTools, true);
+    for (const name of ["create_note", "search_notes", "create_reminder", "create_calendar_event", "get_calendar_events", "switch_audio_output", "send_email", "read_unread_emails", "get_recent_emails", "search_emails", "convert_document", "edit_document"]) {
+      const tool = adapted.find((t) => t.function.name === name);
+      expect(tool, `tool ${name} should exist`).toBeDefined();
+      expect(tool!.function.description, `${name} should not claim macOS-only`).not.toContain("仅支持 macOS");
+    }
+  });
 });

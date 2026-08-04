@@ -1173,10 +1173,7 @@ async function htmlToPdfViaElectron(htmlPath: string, pdfPath: string): Promise<
 }
 
 export async function convertDocument(source: string, target: string): Promise<string> {
-  if (isWindows()) {
-    // Windows 无 textutil / 系统级文档转换工具链，降级提示
-    return "文档互转功能当前仅支持 macOS（依赖 textutil 工具链）。";
-  }
+  if (isWindows()) return win.convertDocument(source, target);
   try {
     const src = expandPath(source);
     const dst = expandPath(target);
@@ -1245,10 +1242,7 @@ export async function editDocument(
   color?: string, pageStart?: number, pageEnd?: number,
   code?: string
 ): Promise<string> {
-  if (isWindows()) {
-    // Windows 依赖 python3 + docx 库，工具链路径差异大，降级提示
-    return "文档编辑功能当前仅支持 macOS。";
-  }
+  if (isWindows()) return win.editDocument(source, target, operation, color, pageStart, pageEnd, code);
   try {
     const src = expandPath(source);
     const dst = expandPath(target);
