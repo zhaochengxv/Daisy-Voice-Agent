@@ -871,10 +871,8 @@ export interface ToolResult {
  */
 export const MAC_ONLY_TOOLS = [
   "send_email", "read_unread_emails", "get_recent_emails", "search_emails",
-  "create_note", "search_notes", "create_reminder",
   "create_calendar_event", "get_calendar_events",
   "convert_document", "edit_document", "edit_pdf",
-  "switch_audio_output",
 ];
 
 /**

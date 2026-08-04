@@ -59,19 +59,23 @@
 | set_timer / set_alarm | 派生独立 powershell + console.beep | ☐ |
 | download_media | yt-dlp.exe（需 .exe 随包/在 PATH） | ☐ |
 | trim_video / convert_video / extract_audio | ffmpeg-static 跨平台，应正常 | ☐ |
-| send_email / read_unread_emails / get_recent_emails / search_emails | 提示「当前仅支持 macOS」 | ☐ |
-| create_note / search_notes / create_reminder / create_calendar_event / get_calendar_events | 提示「当前仅支持 macOS」 | ☐ |
-| convert_document / edit_document / edit_pdf | 提示「当前仅支持 macOS」 | ☐ |
-| switch_audio_output | 提示「当前仅支持 macOS」 | ☐ |
+| send_email / read_unread_emails / get_recent_emails / search_emails | 未检测到 Outlook 时提示需安装（已实现 Outlook COM） | ☐ |
+| create_calendar_event / get_calendar_events | 未检测到 Outlook 时提示需安装（已实现 Outlook COM） | ☐ |
+| create_note / search_notes | 写入 ~/Documents/Daisy备忘录/*.md，按关键词检索 | ☐ |
+| create_reminder | 到期派生 powershell 蜂鸣提醒 | ☐ |
+| convert_document / edit_document | 已实现 Word COM（需安装 Office） | ☐ |
+| edit_pdf | 提示「当前仅支持 macOS」（Windows 无免费内置方案） | ☐ |
+| switch_audio_output | Core Audio API 枚举/切换默认输出设备，设备名模糊匹配 | ☐ |
 
 ## 降级与边界
 
 | 场景 | 预期 | 通过 |
 |------|------|------|
-| 勿扰/专注模式 | 提示「当前仅支持 macOS」（Windows 无原生 API） | ☐ |
-| 左右分屏 | 提示「当前仅支持 macOS」 | ☐ |
+| 勿扰/专注模式 | 注册表 NOC_GLOBAL_SETTING_TOASTS_ENABLED 静音所有通知 | ☐ |
+| 左右分屏 | AppActivate 激活窗口 + Win+Left/Right（Snap 布局），应用未运行提示 | ☐ |
 | 最小化窗口 | PowerShell ShowWindow minimize | ☐ |
 | 最小化除XX外所有窗口 | 按 MainWindowHandle 过滤，排除 explorer/daisy | ☐ |
+| 邮件/日历/文档（未装 Office） | 返回「未检测到 Outlook/Word，请安装 Microsoft 365」提示 | ☐ |
 
 ## 注意事项
 

@@ -460,16 +460,86 @@ export async function searchEmails(_query: string, _limit: number = 5): Promise<
   return unavailableOnWindows("搜索邮件（Mail）");
 }
 
-export async function createNote(_title: string, _body: string): Promise<string> {
-  return unavailableOnWindows("创建备忘录（Notes）");
+const NOTES_DIR_NAME = "Daisy备忘录";
+
+function notesDir(): string {
+  return path.join(os.homedir(), "Documents", NOTES_DIR_NAME);
 }
 
-export async function searchNotes(_query: string): Promise<string> {
-  return unavailableOnWindows("搜索备忘录（Notes）");
+/** 安全化文件名：去掉路径分隔符与非法字符 */
+function safeFileName(name: string): string {
+  return name.replace(/[\\/:*?"<>|\r\n]+/g, "_").trim().slice(0, 80) || "未命名";
 }
 
-export async function createReminder(_title: string, _dueDate?: string, _notes?: string): Promise<string> {
-  return unavailableOnWindows("创建提醒事项（Reminders）");
+/** Windows 创建备忘录：写入 ~/Documents/Daisy备忘录/<标题>.md（无内置 Notes 等价物） */
+export async function createNote(title: string, body: string): Promise<string> {
+  try {
+    const fs = require("node:fs");
+    const dir = notesDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `${safeFileName(title)}.md`);
+    const content = `# ${title}\n\n${body || ""}\n`;
+    fs.writeFileSync(filePath, content, "utf8");
+    return `已创建备忘录「${title}」，保存至 ${filePath}`;
+  } catch (error) {
+    return `创建备忘录失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/** Windows 搜索备忘录：递归扫描备忘录目录按关键词匹配 */
+export async function searchNotes(query: string): Promise<string> {
+  try {
+    const fs = require("node:fs");
+    const dir = notesDir();
+    if (!fs.existsSync(dir)) return "暂无备忘录（目录尚未创建）";
+    const lower = query.toLowerCase();
+    const hits: string[] = [];
+    const walk = (d: string): void => {
+      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        const full = path.join(d, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.isFile() && full.toLowerCase().endsWith(".md")) {
+          const text = fs.readFileSync(full, "utf8");
+          if (text.toLowerCase().includes(lower)) {
+            const firstLine = text.split("\n").find((l: string) => l.trim()) || "";
+            hits.push(`「${entry.name.replace(/\.md$/, "")}」: ${firstLine.trim().slice(0, 60)}`);
+          }
+        }
+      }
+    };
+    walk(dir);
+    if (hits.length === 0) return `没有找到包含「${query}」的备忘录`;
+    return hits.slice(0, 10).join("\n");
+  } catch (error) {
+    return `搜索备忘录失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/** Windows 创建提醒：解析到期时间后派生后台 powershell，到点蜂鸣提醒 */
+export async function createReminder(title: string, dueDate?: string, _notes?: string): Promise<string> {
+  let diffSec: number;
+  if (dueDate) {
+    const m = /^(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})/.exec(dueDate.trim());
+    if (!m) return `提醒时间格式无效：${dueDate}，请使用 YYYY-MM-DD HH:MM 格式`;
+    const [_, y, mo, d, h, mi] = m.map(Number);
+    const target = new Date(y, mo - 1, d, h, mi, 0);
+    const diffMs = target.getTime() - Date.now();
+    if (diffMs <= 0) return `提醒时间 ${dueDate} 已过期，请指定未来的时间`;
+    diffSec = Math.round(diffMs / 1000);
+  } else {
+    diffSec = 5;
+  }
+
+  const safeTitle = title.replace(/['\r\n]+/g, "");
+  const inner = `Start-Sleep -Seconds ${diffSec}; for (\$i = 0; \$i -lt 3; \$i++) { [console]::beep(1100, 600); Start-Sleep -Milliseconds 350 }; [console]::beep(1500, 900)`;
+  try {
+    const script = `Start-Process powershell.exe -ArgumentList '-NoProfile','-WindowStyle','Hidden','-Command','${inner.replace(/'/g, "''")}'`;
+    await runPowerShell(script);
+    const when = dueDate ? `（${dueDate} 提醒）` : "（5 秒后提醒）";
+    return `已设置提醒「${safeTitle}」${when}`;
+  } catch {
+    return unavailableOnWindows("创建提醒（Reminders）");
+  }
 }
 
 export async function createCalendarEvent(_title: string, _startDate: string, _endDate?: string, _location?: string, _notes?: string): Promise<string> {
@@ -480,8 +550,143 @@ export async function getCalendarEvents(_days: number): Promise<string> {
   return unavailableOnWindows("查看日历事件（Calendar）");
 }
 
-export async function switchAudioOutput(_deviceName: string): Promise<string> {
-  return unavailableOnWindows("切换音频输出");
+/** Windows 切换音频输出设备：Core Audio API 枚举渲染端点并设默认（无需第三方工具） */
+export async function switchAudioOutput(deviceName: string): Promise<string> {
+  try {
+    const script = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+class MMDeviceEnumeratorComObject { }
+
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {
+    int EnumAudioEndpoints(int dataFlow, int stateMask, out IMMDeviceCollection devices);
+    int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);
+    int GetDevice(string id, out IMMDevice device);
+    int RegisterEndpointNotificationCallback(IntPtr callback);
+    int UnregisterEndpointNotificationCallback(IntPtr callback);
+}
+
+[Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceCollection {
+    int GetCount(out int count);
+    int Item(int index, out IMMDevice device);
+}
+
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {
+    int Activate(ref Guid iid, int ctx, IntPtr param, out IntPtr iface);
+    int OpenPropertyStore(int access, out IPropertyStore props);
+    int GetId(out IntPtr id);
+    int GetState(out int state);
+}
+
+[Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPropertyStore {
+    int GetCount(out int count);
+    int GetAt(int index, out PROPERTYKEY key);
+    int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+    int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+    int Commit();
+}
+
+[StructLayout(LayoutKind.Sequential)]
+struct PROPERTYKEY {
+    public Guid fmtid;
+    public int pid;
+}
+
+[StructLayout(LayoutKind.Explicit)]
+struct PROPVARIANT {
+    [FieldOffset(0)] public ushort vt;
+    [FieldOffset(8)] public IntPtr pwszVal;
+}
+
+[ComImport, Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")]
+class CPolicyConfigClient { }
+
+[Guid("f8679f50-850a-41cf-9c72-430f290290c8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPolicyConfig {
+    int GetMixFormat(IntPtr pszDeviceName, IntPtr ppFormat);
+    int GetDeviceFormat(IntPtr pszDeviceName, bool bDefault, IntPtr ppFormat);
+    int ResetDeviceFormat(IntPtr pszDeviceName);
+    int SetDeviceFormat(IntPtr pszDeviceName, IntPtr pEndpointFormat, IntPtr mixFormat);
+    int GetProcessingPeriod(IntPtr pszDeviceName, bool bDefault, IntPtr pmftDefaultPeriod, IntPtr pmftMinimumPeriod);
+    int SetProcessingPeriod(IntPtr pszDeviceName, IntPtr pmftPeriod);
+    int GetShareMode(IntPtr pszDeviceName, IntPtr pMode);
+    int SetShareMode(IntPtr pszDeviceName, IntPtr mode);
+    int GetPropertyValue(IntPtr pszDeviceName, bool bFxStore, IntPtr key, IntPtr pv);
+    int SetPropertyValue(IntPtr pszDeviceName, bool bFxStore, IntPtr key, IntPtr pv);
+    int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string pszDeviceName, int role);
+    int SetEndpointVisibility(IntPtr pszDeviceName, bool bVisible);
+}
+
+public static class AudioHelper {
+    [DllImport("ole32.dll")] public static extern int CoTaskMemFree(IntPtr pv);
+    public static string GetDeviceName(IMMDevice device) {
+        IPropertyStore props;
+        device.OpenPropertyStore(0, out props);
+        PROPERTYKEY key = new PROPERTYKEY();
+        key.fmtid = new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0");
+        key.pid = 14;
+        PROPVARIANT val = new PROPVARIANT();
+        props.GetValue(ref key, out val);
+        string name = Marshal.PtrToStringUni(val.pwszVal) ?? "";
+        CoTaskMemFree(val.pwszVal);
+        return name;
+    }
+    public static string GetDeviceId(IMMDevice device) {
+        IntPtr id;
+        device.GetId(out id);
+        string s = Marshal.PtrToStringUni(id) ?? "";
+        CoTaskMemFree(id);
+        return s;
+    }
+}
+"@
+$target = $env:DAISY_ARG0
+$enumerator = New-Object MMDeviceEnumeratorComObject
+$devices = $null
+[void]$enumerator.EnumAudioEndpoints(0, 1, [ref]$devices)
+$count = 0
+[void]$devices.GetCount([ref]$count)
+$found = $false
+$deviceList = @()
+for ($i = 0; $i -lt $count; $i++) {
+    $dev = $null
+    [void]$devices.Item($i, [ref]$dev)
+    $id = [AudioHelper]::GetDeviceId($dev)
+    $name = [AudioHelper]::GetDeviceName($dev)
+    if ($name) { $deviceList += $name }
+    if ($target -and $name -and $name.ToLower().Contains($target.ToLower())) {
+        $policy = New-Object CPolicyConfigClient
+        [void]$policy.SetDefaultEndpoint($id, 0)
+        [void]$policy.SetDefaultEndpoint($id, 1)
+        [void]$policy.SetDefaultEndpoint($id, 2)
+        $found = $true
+        Write-Output ("SWITCHED:" + $name)
+        break
+    }
+}
+if (-not $found) {
+    if ($target) { Write-Output ("NOT_FOUND:" + ($deviceList -join '|')) }
+    else { Write-Output ("LIST:" + ($deviceList -join '|')) }
+}`;
+    const result = await runPowerShell(script, { args: [deviceName || ""], timeoutMs: 60000 });
+    if (result.startsWith("SWITCHED:")) {
+      return `已将音频输出切换到「${result.slice(9)}」`;
+    }
+    if (result.startsWith("LIST:")) {
+      return `当前可用的音频输出设备：\n${result.slice(5).split("|").join("\n")}`;
+    }
+    const devices = result.startsWith("NOT_FOUND:") ? result.slice(10).split("|") : [];
+    return `未找到名为「${deviceName}」的音频设备。${devices.length ? `当前可用的输出设备：${devices.join("、")}` : ""}`;
+  } catch (error) {
+    return `切换音频输出失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
 /** Windows 音量控制：调高/调低/静音（使用 PowerShell 与 user32.dll） */
@@ -599,14 +804,61 @@ Write-Output "OK"`;
   }
 }
 
-/** Windows 分屏：无原生等价物，降级提示 */
-export async function splitScreen(_left: string, _right: string): Promise<string> {
-  return unavailableOnWindows("左右分屏");
+/** Windows 左右分屏：激活应用窗口后发 Win+Left / Win+Right（原生 Snap 布局） */
+export async function splitScreen(left: string, right: string): Promise<string> {
+  try {
+    const script = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class SnapKey {
+    [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+}
+"@
+function Invoke-Snap($appName, $keyCode) {
+    $shell = New-Object -ComObject WScript.Shell
+    $activated = $shell.AppActivate($appName)
+    if (-not $activated) { return $false }
+    Start-Sleep -Milliseconds 350
+    [SnapKey]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero)
+    [SnapKey]::keybd_event([byte]$keyCode, 0, 0, [UIntPtr]::Zero)
+    [SnapKey]::keybd_event([byte]$keyCode, 0, 2, [UIntPtr]::Zero)
+    [SnapKey]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 350
+    return $true
+}
+$leftOk = Invoke-Snap $env:DAISY_ARG0 0x25
+$rightOk = Invoke-Snap $env:DAISY_ARG1 0x27
+if (-not $leftOk -and -not $rightOk) { Write-Output "NOT_FOUND" }
+elseif ($leftOk -and $rightOk) { Write-Output "BOTH" }
+elseif ($leftOk) { Write-Output "LEFT_ONLY" }
+else { Write-Output "RIGHT_ONLY" }`;
+    const result = await runPowerShell(script, { args: [left, right] });
+    if (result === "NOT_FOUND") {
+      return `未找到运行中的应用窗口：「${left}」「${right}」，请先打开两个应用`;
+    }
+    const parts: string[] = [];
+    if (result.includes("LEFT")) parts.push(`「${left}」已分到左半屏`);
+    if (result.includes("RIGHT")) parts.push(`「${right}」已分到右半屏`);
+    return `分屏完成：${parts.join("，")}`;
+  } catch {
+    return unavailableOnWindows("左右分屏");
+  }
 }
 
-/** Windows 勿扰/专注模式：无原生等价物，降级提示 */
-export async function setDoNotDisturb(_enable: boolean): Promise<string> {
-  return unavailableOnWindows("勿扰/专注模式");
+/** Windows 勿扰模式：关闭/开启所有 Toast 通知（等效专注助手静音通知） */
+export async function setDoNotDisturb(enable: boolean): Promise<string> {
+  try {
+    const script = `
+$path = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings'
+New-Item -Path $path -Force | Out-Null
+New-ItemProperty -Path $path -Name 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' -PropertyType DWord -Value $env:DAISY_ARG0 -Force | Out-Null
+Write-Output "OK"`;
+    await runPowerShell(script, { args: [enable ? "0" : "1"] });
+    return enable ? "已开启勿扰模式（所有应用通知已静音）" : "已关闭勿扰模式（通知恢复）";
+  } catch {
+    return unavailableOnWindows("勿扰/专注模式");
+  }
 }
 
 /** Windows Shell 命令执行：经 runPowerShell 无 shell 直传，返回 stdout/stderr */
