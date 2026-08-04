@@ -8,6 +8,15 @@
 2. 准备 `daisy.env`（火山 ASR + DeepSeek + Edge TTS 配置），与 macOS 同款。
 3. 可选：将 `whisper-cli.exe` + `ggml-base.bin` 放入 `assets/bin` 随包分发，或加入 PATH 以启用唤醒词。
 
+## 界面与 LLM 提示适配
+
+| 场景 | 预期 | 通过 |
+|------|------|------|
+| 设置窗口标题栏 | Windows 显示原生标题栏（可拖动/关闭/最小化），无 40px 顶部留白遮挡 | ☐ |
+| LLM 工具描述 | 邮件/备忘录/日历/文档/PDF 编辑等工具描述带「当前仅支持 macOS」标注，LLM 不误用 | ☐ |
+| 系统提示词 | 排除进程列表显示 explorer 而非 Finder，无 AppleScript 指引 | ☐ |
+| TTS 音频播放 | `file:///C:/...` URL 正确加载 MP3（Windows 反斜杠路径已转换） | ☐ |
+
 ## 核心循环（优先级高）
 
 | 场景 | 预期 | 通过 |

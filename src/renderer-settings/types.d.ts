@@ -1,5 +1,7 @@
 // diriAPI 类型（跟 preload/index.ts 里的 DiriAPI 对齐）
 export interface DiriAPI {
+  platform: NodeJS.Platform;
+
   startRecording: () => void;
   stopRecording: () => void;
   sendText: (text: string) => void;

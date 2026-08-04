@@ -1,3 +1,5 @@
+import { isWindows } from "../utils/windowsShell";
+
 export const SYSTEM_PROMPT = `你是 Daisy，AI 语音助手。
 
 规则：
@@ -64,3 +66,17 @@ export const SYSTEM_PROMPT = `你是 Daisy，AI 语音助手。
 - search_emails：搜索邮件（query, limit）
 - run_shell_command：执行终端命令（command）
 - edit_pdf：PDF 原地编辑（find/fill/delete/replace）`;
+
+/**
+ * Windows 变体提示词：修正 macOS 专属表述，告知 LLM 部分工具降级。
+ */
+export const WINDOWS_SYSTEM_PROMPT = SYSTEM_PROMPT
+  .replace("自动排除 Finder, Terminal, Daisy", "自动排除 explorer, Daisy 等系统进程")
+  .replace("不要自己编写 AppleScript。", "不要自己编写 PowerShell 或 AppleScript。")
+  .replace("绝对不要为朗读文字而调用 run_shell_command 执行 say 命令。你的回复会由应用自带 TTS 朗读。", "绝对不要为朗读文字而调用 run_shell_command。你的回复会由应用自带 TTS 朗读。")
+  .replace("（自动排除 Finder, Terminal, Daisy，可选 exclude_names）", "（自动排除 explorer, Daisy 等，可选 exclude_names）");
+
+/** 按平台返回系统提示词 */
+export function getSystemPrompt(): string {
+  return isWindows() ? WINDOWS_SYSTEM_PROMPT : SYSTEM_PROMPT;
+}

@@ -212,7 +212,9 @@ diriAPI.onTtsPlay((filePath) => {
   currentAudioPath = filePath;
 
   const loadStartTime = performance.now();
-  currentAudio = new Audio("file://" + filePath);
+  // 构造跨平台 file:// URL：Windows 反斜杠路径转正斜杠（file:///C:/...），macOS 保留绝对路径
+  const fileUrl = "file:///" + String(filePath).split("\\").join("/").replace(/^\/+/, "");
+  currentAudio = new Audio(fileUrl);
   logToMain(`[TTS_PERF] Audio Loaded (instantiation took ${(performance.now() - loadStartTime).toFixed(1)}ms): ${filePath}`);
 
   currentAudio.addEventListener("canplay", () => {

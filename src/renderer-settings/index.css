@@ -41,6 +41,14 @@
   pointer-events: none;
 }
 
+/* Windows 使用原生标题栏：不需要隐藏标题栏的拖拽区与顶部留白 */
+html[data-platform="win32"] .settings-body::before {
+  display: none;
+}
+html[data-platform="win32"] .settings-body {
+  min-height: 100vh;
+}
+
 /* 背景中的发光氛围色块 - 已在纯白烟色背景下隐藏 */
 .bg-ambient-glow {
   display: none;

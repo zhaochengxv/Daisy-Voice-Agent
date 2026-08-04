@@ -705,6 +705,17 @@ export async function listDirectory(dirPath: string): Promise<string> {
 }
 
 export async function runShellCommand(command: string): Promise<string> {
+  if (isWindows()) {
+    try {
+      const { stdout, stderr } = await win.runShellCommand(command);
+      const output = (stdout + (stderr ? `\nSTDERR: ${stderr}` : "")).trim();
+      const truncated = output.length > 5000 ? output.slice(0, 5000) + "\n...(输出过长，已截断)" : output;
+      return truncated || "命令执行完成（无输出）";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `命令执行失败: ${message}`;
+    }
+  }
   try {
     const { stdout, stderr } = await execAsync(command, {
       maxBuffer: 1024 * 1024 * 5,

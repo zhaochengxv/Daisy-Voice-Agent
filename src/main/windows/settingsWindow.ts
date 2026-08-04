@@ -1,6 +1,7 @@
 import path from "node:path";
 import { BrowserWindow, shell } from "electron";
 import { log, logError } from "../utils/logger";
+import { isWindows } from "../utils/windowsShell";
 
 let settingsWindow: BrowserWindow | null = null;
 
@@ -14,7 +15,8 @@ export function createSettingsWindow(hidden = false): BrowserWindow {
     return settingsWindow;
   }
 
-  settingsWindow = new BrowserWindow({
+  // macOS 用隐藏标题栏 + 红绿灯；Windows 保留原生标题栏（hiddenInset 无等效物）
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
     width: 900,
     height: 721,
     minWidth: 900,
@@ -23,8 +25,6 @@ export function createSettingsWindow(hidden = false): BrowserWindow {
     title: "Daisy 设置",
     resizable: true,
     backgroundColor: "#eef2fa",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 18, y: 18 },
     show: false, // 启动时预创建但不弹出，避免每次启动打扰用户
     webPreferences: {
       preload: path.join(__dirname, "../../preload/index.js"),
@@ -32,7 +32,13 @@ export function createSettingsWindow(hidden = false): BrowserWindow {
       nodeIntegration: false,
       sandbox: false,
     },
-  });
+  };
+  if (!isWindows()) {
+    windowOptions.titleBarStyle = "hiddenInset";
+    windowOptions.trafficLightPosition = { x: 18, y: 18 };
+  }
+
+  settingsWindow = new BrowserWindow(windowOptions);
 
   settingsWindow.loadFile(path.join(__dirname, "../../renderer-settings/settings.html"));
 

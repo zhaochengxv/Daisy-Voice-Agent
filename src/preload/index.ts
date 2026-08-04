@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer } from "electron";
 import { IPC_CHANNELS } from "../main/ipc/channels";
 
 export interface DiriAPI {
+  // Platform detection for renderer adaptation (macOS titleBar / Windows frame)
+  platform: NodeJS.Platform;
+
   // Send commands to main
   startRecording: () => void;
   stopRecording: () => void;
@@ -88,6 +91,8 @@ function createListener<T>(channel: string) {
 }
 
 const api: DiriAPI = {
+  platform: process.platform,
+
   startRecording: () => ipcRenderer.send(IPC_CHANNELS.START_RECORDING),
   stopRecording: () => ipcRenderer.send(IPC_CHANNELS.STOP_RECORDING),
   sendText: (text: string) => ipcRenderer.send(IPC_CHANNELS.SEND_TEXT, text),

@@ -19,6 +19,10 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { IdleOrb } from "./components/IdleOrb";
 
+// macOS 用隐藏标题栏需顶部留白容纳红绿灯；Windows 原生标题栏已占空间，减少留白
+const isMacOSSettings = (window.diriAPI?.platform || "darwin") !== "win32";
+const TOP_PADDING_CLASS = isMacOSSettings ? "pt-14" : "pt-3";
+
 interface SettingsState {
   DEEPSEEK_API_KEY: string;
   DEEPSEEK_BASE_URL: string;
@@ -351,7 +355,7 @@ export default function App() {
         <div className="orb orb-3"></div>
       </div>
 
-      <div className="w-full h-screen relative z-10 grid grid-cols-[240px_1fr] gap-6 px-6 pb-6 pt-14">
+      <div className={`w-full h-screen relative z-10 grid grid-cols-[240px_1fr] gap-6 px-6 pb-6 ${TOP_PADDING_CLASS}`}>
         {/* Sidebar */}
         <aside className="liquid-glass flex flex-col h-full rounded-[28px] overflow-hidden p-5">
           <div className="flex items-center gap-[18px] pb-5 mb-5 border-b border-white/50 relative">

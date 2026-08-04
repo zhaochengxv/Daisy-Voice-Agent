@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { config } from "../config/env";
-import { availableTools, ToolCall, ToolResult } from "./tools";
-import { SYSTEM_PROMPT } from "./system-prompt";
+import { getPlatformTools, ToolCall, ToolResult } from "./tools";
+import { getSystemPrompt } from "./system-prompt";
 import { log } from "../utils/logger";
 import { cleanTextForTTS } from "../utils/textClean";
 
@@ -146,7 +146,7 @@ export class DeepSeekClient extends EventEmitter {
     this.model = config.llm.model;
     this.conversation = existingMessages && existingMessages.length > 0
       ? [...existingMessages]
-      : [{ role: "system", content: SYSTEM_PROMPT }];
+      : [{ role: "system", content: getSystemPrompt() }];
   }
 
   getConversation(): ChatMessage[] {
@@ -188,7 +188,7 @@ export class DeepSeekClient extends EventEmitter {
       this.emit("error", "任务执行步骤过多（已达100步），已自动中止以防死循环。");
       return;
     }
-    const allowedTools = availableTools.filter(
+    const allowedTools = getPlatformTools().filter(
       t => (this.toolCallCounts.get(t.function.name) || 0) < maxCallsForTool(t.function.name)
     );
     if (allowedTools.length === 0) {

@@ -1,3 +1,5 @@
+import { isWindows } from "../utils/windowsShell";
+
 export interface ToolParameter {
   type: string;
   description: string;
@@ -862,4 +864,43 @@ export interface ToolResult {
   tool_call_id: string;
   role: "tool";
   content: string;
+}
+
+/**
+ * macOS 专属、Windows 返回降级提示的工具名
+ */
+export const MAC_ONLY_TOOLS = [
+  "send_email", "read_unread_emails", "get_recent_emails", "search_emails",
+  "create_note", "search_notes", "create_reminder",
+  "create_calendar_event", "get_calendar_events",
+  "convert_document", "edit_document", "edit_pdf",
+  "switch_audio_output",
+];
+
+/**
+ * 纯函数：按平台标记 macOS 专属工具的 description，便于单测。
+ */
+export function adaptToolsForPlatform(tools: ToolDefinition[], isWindowsPlatform: boolean): ToolDefinition[] {
+  if (!isWindowsPlatform) return tools;
+  const macOnly = new Set(MAC_ONLY_TOOLS);
+  return tools.map((tool) => {
+    const name = tool.function.name;
+    if (!macOnly.has(name)) return tool;
+    return {
+      ...tool,
+      function: {
+        ...tool.function,
+        description: `${tool.function.description}（当前仅支持 macOS）`,
+      },
+    };
+  });
+}
+
+/**
+ * 按平台返回适配后的工具定义：
+ * - Windows 上把 macOS 专属工具的 description 标记为「当前仅支持 macOS」，
+ *   避免 LLM 误导用户调用注定返回降级提示的工具。
+ */
+export function getPlatformTools(): ToolDefinition[] {
+  return adaptToolsForPlatform(availableTools, isWindows());
 }

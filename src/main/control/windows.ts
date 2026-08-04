@@ -488,3 +488,15 @@ export async function splitScreen(_left: string, _right: string): Promise<string
 export async function setDoNotDisturb(_enable: boolean): Promise<string> {
   return unavailableOnWindows("勿扰/专注模式");
 }
+
+/** Windows Shell 命令执行：经 runPowerShell 无 shell 直传，返回 stdout/stderr */
+export async function runShellCommand(command: string): Promise<{ stdout: string; stderr: string }> {
+  try {
+    // 用户命令经 DAISY_ARG0 传入，杜绝拼接注入；PowerShell 直接解释命令本体
+    const stdout = await runPowerShell(`$env:DAISY_ARG0`, { args: [command], timeoutMs: 30000 });
+    return { stdout, stderr: "" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { stdout: "", stderr: message };
+  }
+}

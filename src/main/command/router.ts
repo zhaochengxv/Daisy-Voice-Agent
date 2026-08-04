@@ -512,12 +512,13 @@ const BROWSER_APP_NAMES = [
 async function quitAllBrowsers(): Promise<CommandResult> {
   if (isWindows()) {
     let quitCount = 0;
-    for (const browserName of BROWSER_APP_NAMES) {
-      const result = await win.quitApplication(browserName);
+    const winBrowsers = ["chrome", "msedge", "firefox", "opera", "brave", "360chrome", "chromium"];
+    for (const proc of winBrowsers) {
+      const result = await win.quitApplication(proc);
       if (result && !result.includes("无法关闭")) {
         quitCount++;
       }
-      log(`CommandRouter: quit browser (Windows) ${browserName}: ${result}`);
+      log(`CommandRouter: quit browser (Windows) ${proc}: ${result}`);
     }
     if (quitCount > 0) {
       return { handled: true, action: `quit:browsers(${quitCount})` };
