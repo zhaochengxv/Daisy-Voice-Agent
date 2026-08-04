@@ -31,3 +31,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # macOS / Windows runner 预装 pwsh，校验 windows.ts 全部 PowerShell 脚本语法；
+      # Ubuntu 无 pwsh，check-ps.js 检测不到会自动跳过。
+      - name: PowerShell syntax check
+        shell: bash
+        run: node scripts/check-ps.js
