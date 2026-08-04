@@ -3,15 +3,45 @@ import path from "node:path";
 import os from "node:os";
 import { app } from "electron";
 
-function getLogFile(): string {
+const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB 单文件上限，超出后轮转为 .1
+const MAX_BACKUPS = 2;
+
+let logDir = "";
+
+function getLogDir(): string {
+  if (logDir) return logDir;
   try {
-    const logDir = app?.getPath?.("logs") || path.join(os.tmpdir(), "diri-logs");
-    if (!fs.existsSync(logDir)) {
-      fs.mkdirSync(logDir, { recursive: true });
-    }
-    return path.join(logDir, "diri-main.log");
+    logDir = app?.getPath?.("logs") || path.join(os.tmpdir(), "diri-logs");
   } catch {
-    return path.join(os.tmpdir(), "diri-main.log");
+    logDir = path.join(os.tmpdir(), "diri-logs");
+  }
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+  return logDir;
+}
+
+function rotateIfNeeded(file: string): void {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    return;
+  }
+  if (stat.size < MAX_LOG_SIZE) return;
+  // 删除最旧的备份，依次滚动
+  try {
+    fs.rmSync(`${file}.${MAX_BACKUPS}`, { force: true });
+    for (let i = MAX_BACKUPS - 1; i >= 1; i--) {
+      try {
+        fs.renameSync(`${file}.${i}`, `${file}.${i + 1}`);
+      } catch {
+        // 忽略缺失的中间备份
+      }
+    }
+    fs.renameSync(file, `${file}.1`);
+  } catch {
+    // ignore
   }
 }
 
@@ -24,7 +54,9 @@ export function log(message: string): void {
     // stdout may not be available in packaged app
   }
   try {
-    fs.appendFileSync(getLogFile(), line);
+    const file = path.join(getLogDir(), "diri-main.log");
+    rotateIfNeeded(file);
+    fs.appendFileSync(file, line);
   } catch {
     // ignore
   }

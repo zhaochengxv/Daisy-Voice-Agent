@@ -8,6 +8,8 @@ const ORB_SIZE = 92;
 let floatWindow: BrowserWindow | null = null;
 
 let hideTimeout: NodeJS.Timeout | null = null;
+let isLoaded = false;
+let pendingShow = false;
 
 export function createFloatWindow(): BrowserWindow {
   if (floatWindow && !floatWindow.isDestroyed()) {
@@ -42,6 +44,15 @@ export function createFloatWindow(): BrowserWindow {
   });
 
   floatWindow.loadFile(path.join(__dirname, "../../renderer/float.html"));
+  floatWindow.webContents.on("did-finish-load", () => {
+    isLoaded = true;
+    // 若加载期间已有 show 请求，补发 SHOW_WINDOW，避免首帧事件丢失
+    if (pendingShow) {
+      pendingShow = false;
+      log("[floatWindow] Replaying pending SHOW_WINDOW after load.");
+      sendToFloatWindow(IPC_CHANNELS.SHOW_WINDOW);
+    }
+  });
   // Do not use Electron's system-wide content protection here. It also hides
   // the orb from third-party screen recorders such as Screen Studio. Daisy's
   // own full-screen capture path hides the orb only for that single frame.
@@ -60,6 +71,8 @@ export function createFloatWindow(): BrowserWindow {
 
   floatWindow.on("closed", () => {
     floatWindow = null;
+    isLoaded = false;
+    pendingShow = false;
   });
 
   return floatWindow;
@@ -91,6 +104,10 @@ export function showFloatWindow(): void {
     }
   } catch (err) {
     console.error("Error setting float window position:", err);
+  }
+
+  if (!isLoaded) {
+    pendingShow = true;
   }
 
   sendToFloatWindow(IPC_CHANNELS.SHOW_WINDOW);

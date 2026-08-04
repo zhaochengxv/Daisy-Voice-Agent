@@ -14,8 +14,7 @@
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac",
-    "clean": "rm -rf dist releases",
-    "postinstall": "patch-package"
+    "clean": "rm -rf dist releases"
   },
   "devDependencies": {
     "@types/node": "^22.15.18",

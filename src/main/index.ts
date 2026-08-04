@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import https from "node:https";
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { app, ipcMain, Menu, BrowserWindow, systemPreferences } from "electron";
 import { autoUpdater } from "electron-updater";
@@ -15,11 +15,17 @@ import { AsrSession } from "./asr";
 import { WhisperAsrSession } from "./asr/whisper";
 import { DeepSeekClient, DualChannel } from "./llm/deepseek";
 import { ConversationManager } from "./llm/conversation";
-import { EdgeTTSPlayer, startTTSCleanup, stopTTSCleanup } from "./tts/edgeTTS";
+import { EdgeTTSPlayer, startTTSCleanup } from "./tts/edgeTTS";
+import { TtsPipeline } from "./tts/pipeline";
+import { StreamTts } from "./tts/streamTts";
 import { GlobalShortcut } from "./shortcut/globalShortcut";
 import { WakeWordMonitor, VAD } from "./wakeword/monitor";
 import { tryLocalCommand, initCommandRouter } from "./command/router";
 import { log, logError } from "./utils/logger";
+import { cleanTextForTTS } from "./utils/textClean";
+import { runAppleScript } from "./utils/appleScript";
+import { VolumeGuard } from "./control/volumeGuard";
+import { ConversationHistory } from "./history";
 
 {
   const pathParts = (process.env.PATH || "").split(":").filter(Boolean);
@@ -29,39 +35,34 @@ import { log, logError } from "./utils/logger";
   process.env.PATH = pathParts.join(":");
 }
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
-const AUTO_HIDE_TIMEOUT_MS = 500;
+const AUTO_HIDE_TIMEOUT_MS = 15000; // 答案播完停留 15s 供阅读，再自动隐藏
 const CONVERSATION_EXPIRE_MS = 5 * 60 * 1000; // 5 minutes
 
 function playSound(name: string): void {
-  exec(`afplay /System/Library/Sounds/${name}.aiff &`);
+  execFile("afplay", [`/System/Library/Sounds/${name}.aiff`], () => {
+    // ignore — 系统提示音播放失败不影响主流程
+  });
 }
 
 let asrSession: AsrSession | WhisperAsrSession | null = null;
 let llmClient: DeepSeekClient | null = null;
-let isSystemMutedByApp = false;
-let pausedChromeTabs: string[] = [];
-let ttsPlayer: EdgeTTSPlayer | null = null;
 let globalShortcut: GlobalShortcut | null = null;
 let shortcutPermissionTimer: NodeJS.Timeout | null = null;
 let conversationManager: ConversationManager | null = null;
 let autoHideTimer: NodeJS.Timeout | null = null;
 let safetyNetTimer: NodeJS.Timeout | null = null;
 let isOrbVisible = false;
-let currentAiResponse = "";
 let isSpeaking = false;
-let currentPlayingFile: string | null = null;
-let ttsFileQueue: string[] = [];  // queued TTS file paths ready to play
-let activeTtsSynthesisSessionId: number | null = null;  // tracks which session is synthesizing
-let currentTtsPlayToken = 0;  // increments each time a new TTS file is sent to renderer
 let playingTtsSessionId: number | null = null;  // session ID when TTS playback started
 let toolAckPending = false;
-let pendingFinalResponse: string | null = null;
 let wakeWordMonitor: WakeWordMonitor | null = null;
 let currentSessionId = 0;  // increments on each new session, used to detect stale async callbacks
 let isScreenLocked = false;
-let activeMutePromise: Promise<void> | null = null;
+
+const volumeGuard = new VolumeGuard();
+const ttsPipeline = new TtsPipeline();
 
 app.whenReady().then(() => {
   log("App ready");
@@ -92,7 +93,6 @@ app.on("before-quit", () => {
   globalShortcut?.destroy();
   asrSession?.stop();
   wakeWordMonitor?.stop();
-  stopTTSCleanup();
   // Clean up TTS temp files
   const ttsDir = path.join(require("os").tmpdir(), "diri-tts");
   try {
@@ -114,7 +114,7 @@ function initialize(): void {
   log("Initializing...");
   log(`ASR configured: ${isAsrConfigured()}, LLM configured: ${isLlmConfigured()}, shortcutUseWhisper: ${config.whisper.shortcutUseWhisper}`);
   createFloatWindow();
-  createSettingsWindow();
+  createSettingsWindow(true); // 启动时隐藏预创建，用户打开时零延迟
 
   setupIpc();
   setupAudio();
@@ -122,24 +122,21 @@ function initialize(): void {
   setupWakeWord();
   setupPowerMonitor();
   initCommandRouter();
-  loadConversationHistory();
+  conversationHistoryStore.load();
   log("Initialization complete");
 }
 
 function setupPowerMonitor(): void {
   const { powerMonitor } = require("electron");
-  
+
   powerMonitor.on("lock-screen", () => {
+    if (isScreenLocked) return;
     isScreenLocked = true;
-    log("PowerMonitor: Screen locked. Stopping wake word monitor for privacy/avoiding false triggers.");
-    if (wakeWordMonitor) {
-      try {
-        wakeWordMonitor.stop();
-        log("PowerMonitor: Wake word monitor successfully stopped.");
-      } catch (err) {
-        logError("PowerMonitor: Failed to stop wake word monitor", err);
-      }
-    }
+    log("PowerMonitor: Screen locked. Stopping all voice activity for privacy (TTS, recording, wake word).");
+    // 全面终止：停止 TTS 播放、停止录音/ASR、中止 LLM、暂停唤醒词监听，
+    // 杜绝锁屏后环境音误识别唤醒或继续播报隐私内容
+    abortAllTasks();
+    log("PowerMonitor: All voice activity stopped on lock.");
   });
 
   powerMonitor.on("unlock-screen", () => {
@@ -147,7 +144,7 @@ function setupPowerMonitor(): void {
     log("PowerMonitor: Screen unlocked. Resuming wake word monitor.");
     if (wakeWordMonitor && config.wakeWord.enabled) {
       try {
-        wakeWordMonitor.start();
+        wakeWordMonitor.resume();
         log("PowerMonitor: Wake word monitor successfully resumed.");
       } catch (err) {
         logError("PowerMonitor: Failed to resume wake word monitor", err);
@@ -178,14 +175,20 @@ function setupWakeWord(): void {
   log(`Wake word detection enabled, keyword: ${config.wakeWord.keyword}`);
   wakeWordMonitor = new WakeWordMonitor(config.wakeWord.keyword);
 
-  wakeWordMonitor.on("wake", () => {
-    log("Wake word detected! Starting voice listening...");
-
+  wakeWordMonitor.on("wake", (command?: string) => {
     // If already in voice listening mode, ignore (don't re-trigger)
     if (voiceWakeMode) {
       log("Already in voice listening mode, ignoring wake word");
       return;
     }
+
+    // 锁屏期间（含在途音频迟到结果）一律忽略，保障隐私安全
+    if (isScreenLocked) {
+      log("Screen locked, ignoring wake word");
+      return;
+    }
+
+    log(`Wake word detected! command="${command || ""}"`);
 
     // Abort all current tasks (LLM, TTS, ASR, timers)
     abortAllTasks();
@@ -195,6 +198,13 @@ function setupWakeWord(): void {
     stopAutoHideTimer();
     showOrb();
     playSound("Purr");
+
+    if (command) {
+      // 唤醒时附带命令（如“嘿黛西，打开音乐”）：直接执行，无需用户重复
+      log(`Wake word command: executing "${command}" directly`);
+      handleUserInput(command);
+      return;
+    }
 
     // Start voice listening mode
     startVoiceListening();
@@ -273,7 +283,13 @@ function clearEarlyCommandTimer(): void {
 
 async function tryHandleLocalCommandEarly(text: string): Promise<boolean> {
   if (!text.trim() || asrResultConsumed || !isSessionActive) return false;
+  const gen = currentSessionId;
   const result = await tryLocalCommand(text);
+  // 代际守卫：期间新会话/新请求已递增 sessionId，丢弃过时结果
+  if (gen !== currentSessionId) {
+    log("tryHandleLocalCommandEarly stale (new session started), discarding result");
+    return false;
+  }
   if (result.handled) {
     log(`Local command handled early: ${result.action || ""}`);
     asrResultConsumed = true;
@@ -302,25 +318,9 @@ let asrResultConsumed = false;
 const VOICE_SILENCE_MS = 3000;
 
 function stopSpeaking(): void {
-  if (ttsPlayer) {
-    try {
-      ttsPlayer.stop();
-    } catch (e) {}
-    ttsPlayer = null;
-  }
+  ttsPipeline.stop();
   isSpeaking = false;
-  activeTtsSynthesisSessionId = null;
   playingTtsSessionId = null;
-
-  for (const f of ttsFileQueue) {
-    fs.promises.unlink(f).catch(() => {});
-  }
-  ttsFileQueue = [];
-
-  if (currentPlayingFile) {
-    fs.promises.unlink(currentPlayingFile).catch(() => {});
-    currentPlayingFile = null;
-  }
 
   sendToFloatWindow(IPC_CHANNELS.TTS_END);
 }
@@ -333,24 +333,9 @@ function muteCurrentAnswerSpeech(): void {
 
   log("TTS muted by orb click; retaining current answer state");
 
-  try {
-    ttsPlayer?.stop();
-  } catch {
-  }
-  ttsPlayer = null;
+  ttsPipeline.stop();
   isSpeaking = false;
-  activeTtsSynthesisSessionId = null;
   playingTtsSessionId = null;
-
-  for (const filePath of ttsFileQueue) {
-    fs.promises.unlink(filePath).catch(() => {});
-  }
-  ttsFileQueue = [];
-
-  if (currentPlayingFile) {
-    fs.promises.unlink(currentPlayingFile).catch(() => {});
-    currentPlayingFile = null;
-  }
 
   sendToFloatWindow(IPC_CHANNELS.TTS_END);
 }
@@ -399,7 +384,6 @@ function abortAllTasks(): void {
   voiceWakeMode = false;
   wasWokenByVoice = false;
   toolAckPending = false;
-  pendingFinalResponse = null;
   asrResultConsumed = false;
 
   // 6. Stop recording
@@ -705,6 +689,7 @@ function endVoiceListening(): void {
 function handleUserInput(text: string): void {
   asrSession = null;
   isSessionActive = false;
+  const gen = currentSessionId;
   if (!text.trim()) {
     log("Empty transcript, going idle");
     updateState("idle");
@@ -712,10 +697,15 @@ function handleUserInput(text: string): void {
     return;
   }
 
-  addChatEntry("user", text);
+  conversationHistoryStore.add("user", text);
 
   // Try local command router first (zero-latency for simple commands)
   tryLocalCommand(text).then((result) => {
+    // 代际守卫：期间已有新会话/新请求递增 sessionId，本条输入已过时，丢弃避免打断新请求
+    if (gen !== currentSessionId) {
+      log("handleUserInput stale (new session started), discarding local command result");
+      return;
+    }
     if (result.handled) {
       log(`Local command handled: ${result.action || ""}`);
       playSound("Tink");
@@ -740,28 +730,42 @@ function handleUserInput(text: string): void {
     handleLLMRequest(processedText);
   }).catch((error) => {
     logError("Local command error", error);
+    // 代际守卫：异常回调期间可能已有新会话启动，丢弃过时输入避免错误重启 LLM
+    if (gen !== currentSessionId) {
+      log("handleUserInput stale on error (new session started), discarding");
+      return;
+    }
     handleLLMRequest(text);
   });
 }
 
 function handleLLMRequest(text: string): void {
+  // 新一轮请求：递增 session 使旧轮次所有异步回调（含 streamTts 在途合成）失效，
+  // 避免旧轮内容混入本轮播放
+  currentSessionId++;
   const sessionId = currentSessionId;
   const conversation = ensureConversation();
   conversation.addUserMessage(text);
 
-  updateState("thinking");
-  currentAiResponse = "";
-  toolAckPending = false;
-  pendingFinalResponse = null;
-  ttsFileQueue = [];
+  // 中止上一轮 LLM，防止其继续 emit 事件
+  if (llmClient) {
+    llmClient.abort();
+    llmClient = null;
+  }
 
+  updateState("thinking");
+  toolAckPending = false;
+  ttsPipeline.stop();
+  ttsPipeline.clearStopped();
+
+  const streamTts = new StreamTts(sessionId, () => sessionId === currentSessionId);
   let hasSpokenToolAck = false;
 
   llmClient = new DeepSeekClient(conversation.getMessages());
 
   llmClient.on("stream", (chunk) => {
     if (sessionId !== currentSessionId) return;
-    currentAiResponse += chunk;
+    streamTts.feed(chunk, ttsPipeline);
   });
 
   llmClient.on("tool_ack", (ackText: string) => {
@@ -774,24 +778,35 @@ function handleLLMRequest(text: string): void {
     toolAckPending = true;
     hasSpokenToolAck = true;
     if (ackText.trim()) {
-      if (isSpeaking) {
-        ttsPlayer?.stop();
-        ttsPlayer = null;
+      const ackClean = cleanTextForTTS(ackText);
+      const streamed = streamTts.currentEnqueuedClean;
+      const fullySpoken =
+        streamed.length > 0 && streamed.startsWith(ackClean);
+      if (fullySpoken) {
+        // 确认语已通过流式 TTS 实时完整朗读，避免重复播报；
+        // 用 finish() 仅清空累计，保留在途句子的入队资格
+        log("Tool ack already fully spoken via streaming, skipping re-speak");
+        streamTts.finish();
+      } else if (streamed.length > 0 && ackClean.startsWith(streamed)) {
+        // 流式只读完了确认语前缀，补播剩余部分；重置丢弃在途旧句子防止混入
+        const remainder = ackClean.slice(streamed.length);
+        log(`Tool ack partially streamed — speaking remainder: ${remainder.length} chars`);
+        streamTts.reset();
+        stopSpeaking();
+        isSpeaking = false;
+        updateState("speaking");
+        synthesizeRemaining([remainder], sessionId);
+      } else {
+        // 确认语未经过流式朗读，抢占当前播放/排队中的语音，改用 ack 文案
+        log("Tool ack not streamed — preempting to speak ack");
+        streamTts.reset();
+        stopSpeaking();
+        isSpeaking = false;
+        updateState("speaking");
+        synthesizeRemaining([ackText], sessionId);
       }
-      // Delete current playing file
-      if (currentPlayingFile) {
-        fs.promises.unlink(currentPlayingFile).catch(() => {});
-        currentPlayingFile = null;
-      }
-      // Delete queued files
-      for (const f of ttsFileQueue) {
-        fs.promises.unlink(f).catch(() => {});
-      }
-      ttsFileQueue = [];
-      activeTtsSynthesisSessionId = null;
-      isSpeaking = false;
-      updateState("speaking");
-      speakResponse(ackText);
+    } else {
+      streamTts.reset();
     }
   });
  
@@ -800,6 +815,7 @@ function handleLLMRequest(text: string): void {
     log("LLM silent_done: all actions executed silently.");
     isSessionActive = false;
     toolAckPending = false;
+    wasWokenByVoice = false; // 静默执行完成，重置语音轮询模式，防止残留触发误回听
     playSound("Tink");
     // Stop any active TTS confirmation/acknowledgment speech first, ensuring isSpeaking is false
     stopSpeaking();
@@ -808,28 +824,19 @@ function handleLLMRequest(text: string): void {
     conversationManager?.reset();
   });
 
-  llmClient.on("done", ({ display: displayText, speech: speechText }: DualChannel) => {
+  llmClient.on("done", ({ display: displayText }: DualChannel) => {
     if (sessionId !== currentSessionId) return;
-    log(`LLM done, display length: ${displayText.length}, speech length: ${speechText.length}`);
+    log(`LLM done, display length: ${displayText.length}`);
     if (llmClient) {
       conversation.setMessages(llmClient.getConversation());
     } else {
       conversation.addAssistantMessage(displayText);
     }
-    addChatEntry("daisy", displayText);
+    conversationHistoryStore.add("daisy", displayText);
     toolAckPending = false;
 
     if (!displayText.trim()) {
-      isSessionActive = false;
-      updateState("idle");
-      startAutoHideTimer();
-      return;
-    }
-
-    const chunks = splitForPipeline(speechText);
-    log(`TTS pipeline: ${chunks.length} chunks, sizes: ${chunks.map(c => c.length).join(", ")}`);
-
-    if (chunks.length === 0) {
+      ttsPipeline.stop();
       isSessionActive = false;
       updateState("idle");
       startAutoHideTimer();
@@ -838,20 +845,56 @@ function handleLLMRequest(text: string): void {
 
     updateState("speaking", undefined, { isFinal: true, text: displayText });
 
-    if (!isSpeaking) {
-      speakResponse(chunks[0]);
-      if (chunks.length > 1) {
-        synthesizeRemaining(chunks.slice(1), sessionId);
+    // 用户已静音（pipeline 被显式 stop），不再播报剩余文本，仅保留展示
+    if (ttsPipeline.isStopped) {
+      log("TTS muted — skipping remaining speech synthesis");
+      ttsPipeline.endSynthesis();
+      isSpeaking = false;
+      playingTtsSessionId = null;
+      if (wasWokenByVoice) {
+        log("Continuous voice dialogue: loop back to listening");
+        startVoiceListening();
+      } else {
+        isSessionActive = false;
+        updateState("idle");
+        startAutoHideTimer();
       }
-    } else {
-      synthesizeRemaining(chunks, sessionId);
+      return;
     }
+
+    // 流式阶段已按句实时朗读，此处只合成剩余结尾句，避免重复播报
+    const tail = streamTts.remainingClean();
+    streamTts.finish();
+    log(`TTS streaming done, remaining tail: ${tail.length} chars`);
+
+    if (!tail.trim()) {
+      // 内容已全部流式播放，仅结束合成状态；播放完毕由流水线触发 allDone
+      ttsPipeline.endSynthesis();
+      return;
+    }
+
+    const chunks = splitForPipeline(tail);
+    log(`TTS pipeline: ${chunks.length} chunks, sizes: ${chunks.map(c => c.length).join(", ")}`);
+
+    if (chunks.length === 0) {
+      ttsPipeline.endSynthesis();
+      return;
+    }
+
+    // 等待流式在途句子全部入队后再合成结尾块，维持逐句播放顺序，
+    // 防止短结尾块因合成更快而插队到未入队的流式长句之前。
+    streamTts.waitForDrain().then(() => {
+      if (sessionId !== currentSessionId) return;
+      synthesizeRemaining(chunks, sessionId);
+    });
   });
 
   llmClient.on("error", (message) => {
     if (sessionId !== currentSessionId) return;
     logError("LLM error", message);
+    stopSpeaking();
     isSessionActive = false;
+    wasWokenByVoice = false; // 对话中断，重置语音轮询模式，避免下次 allDone 误回听
     updateState("error", message);
     startAutoHideTimer();
   });
@@ -859,13 +902,15 @@ function handleLLMRequest(text: string): void {
   llmClient.sendMessage(text).catch((error) => {
     if (sessionId !== currentSessionId) return;
     logError("LLM sendMessage failed", error);
+    isSessionActive = false;
+    wasWokenByVoice = false;
     updateState("error", error instanceof Error ? error.message : String(error));
     startAutoHideTimer();
   });
 }
 
 function splitForPipeline(text: string): string[] {
-  const clean = stripMarkdownForTTS(text);
+  const clean = cleanTextForTTS(text);
   if (!clean) return [];
 
   // Split into sentences
@@ -931,121 +976,86 @@ function splitForPipeline(text: string): string[] {
   return chunks;
 }
 
-function stripMarkdownForTTS(text: string): string {
-  return text
-    .replace(/\{"display"\s*:\s*"?/g, "")
-    .replace(/"speech"\s*:\s*"?/g, "")
-    .replace(/"\s*\}/g, "")
-    .replace(/\\n/g, " ")
-    .replace(/\\["\\/]/g, "")
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1")
-    .replace(/_{1,3}([^_]+)_{1,3}/g, "$1")
-    .replace(/^#{1,6}\s*/gm, "")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "")
-    .replace(/^[-*+]\s+/gm, "")
-    .replace(/^\d+\.\s+/gm, "")
-    .replace(/^\s*>\s?/gm, "")
-    .replace(/[*#_~|]/g, "")
-    .replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{2B50}\u{2B55}\u{2702}\u{2705}\u{2708}-\u{270F}\u{2764}\u{2763}\u{00A9}\u{00AE}\u{2122}\u{200D}\u{FE0F}]/gu, "")
-    .replace(/℃/g, "度")
-    .replace(/°C/g, "度")
-    .replace(/°/g, "度")
-    .replace(/~/g, "到")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+/**
+ * 逐块合成并交给事件驱动流水线播放。
+ * 每完成一块立即 enqueue，流水线在空闲时马上播放，形成边合成边播。
+ */
+async function synthesizeRemaining(chunks: string[], sessionId: number): Promise<void> {
+  ttsPipeline.beginSynthesis();
+  ttsPipeline.clearStopped();
+
+  try {
+    for (const chunk of chunks) {
+      // Check if session was aborted during synthesis
+      if (sessionId !== currentSessionId) {
+        log("TTS synthesis aborted (session changed)");
+        break;
+      }
+      if (!chunk.trim()) continue;
+      const player = new EdgeTTSPlayer();
+      ttsPipeline.beginSynthesisJob();
+      let filePath: string | null = null;
+      try {
+        filePath = await player.synthesize(chunk);
+      } finally {
+        ttsPipeline.endSynthesisJob();
+      }
+      // Check again after synthesis
+      if (sessionId !== currentSessionId) {
+        if (filePath) fs.promises.unlink(filePath).catch(() => {});
+        log("TTS synthesis result discarded (session changed)");
+        break;
+      }
+      if (filePath) {
+        ttsPipeline.enqueue(filePath);
+        log(`TTS synthesized and queued: ${filePath} (${chunk.length} chars)`);
+      }
+    }
+  } finally {
+    // 会话失效时 pipeline 已由新会话/中止路径 stop()，这里不得再 stop，
+    // 否则会误杀新会话已入队的音频
+    if (sessionId === currentSessionId) {
+      ttsPipeline.endSynthesis();
+    }
+  }
 }
 
-async function synthesizeRemaining(chunks: string[], sessionId: number): Promise<void> {
-  // Don't start if another synthesis is already running for this session
-  if (activeTtsSynthesisSessionId !== null && activeTtsSynthesisSessionId !== sessionId) {
-    log(`TTS synthesis skipped — another session ${activeTtsSynthesisSessionId} is synthesizing`);
+// ── TTS 流水线事件绑定 ──
+
+ttsPipeline.on("play", (filePath: string) => {
+  log(`TTS play: ${filePath}`);
+  unmuteSystemOnly();
+  playingTtsSessionId = currentSessionId;
+  isSpeaking = true;
+  updateState("speaking");
+  sendToFloatWindow(IPC_CHANNELS.TTS_PLAY, filePath);
+});
+
+ttsPipeline.on("allDone", () => {
+  log("TTS pipeline: all done");
+  isSpeaking = false;
+  playingTtsSessionId = null;
+
+  // If ack just finished and LLM is still processing, don't hide — wait for done
+  if (toolAckPending) {
+    log("Ack finished, waiting for LLM final answer");
+    updateState("thinking");
     return;
   }
-  activeTtsSynthesisSessionId = sessionId;
-
-  for (const chunk of chunks) {
-    // Check if session was aborted during synthesis
-    if (sessionId !== currentSessionId || activeTtsSynthesisSessionId !== sessionId) {
-      log("TTS synthesis aborted (session changed)");
-      break;
-    }
-    if (!chunk.trim()) continue;
-    const player = new EdgeTTSPlayer();
-    const filePath = await player.synthesize(chunk);
-    // Check again after synthesis
-    if (sessionId !== currentSessionId || activeTtsSynthesisSessionId !== sessionId) {
-      if (filePath) fs.promises.unlink(filePath).catch(() => {});
-      log("TTS synthesis result discarded (session changed)");
-      break;
-    }
-    if (filePath) {
-      ttsFileQueue.push(filePath);
-      log(`TTS synthesized and queued: ${filePath} (${chunk.length} chars)`);
-    }
-  }
-
-  activeTtsSynthesisSessionId = null;
-}
-
-function speakResponse(text: string): void {
-  log(`Speaking response, length: ${text.length}`);
-  log(`TTS text: ${text.substring(0, 100)}${text.length > 100 ? "..." : ""}`);
-  if (!text || !text.trim()) {
+  if (wasWokenByVoice) {
+    log("Continuous voice dialogue: loop back to listening");
+    startVoiceListening();
+  } else {
+    isSessionActive = false;
     updateState("idle");
     startAutoHideTimer();
-    return;
   }
-
-  unmuteSystemOnly();
-  isSpeaking = true;
-  if (!isScreenLocked) {
-    wakeWordMonitor?.resume();
-  }
-  ttsPlayer = new EdgeTTSPlayer();
-
-  ttsPlayer.on("start", () => {
-    sendToFloatWindow(IPC_CHANNELS.TTS_START);
-  });
-
-  ttsPlayer.on("play", (filePath: string) => {
-    log(`TTS play: ${filePath}`);
-    currentPlayingFile = filePath;
-    playingTtsSessionId = currentSessionId;
-    sendToFloatWindow(IPC_CHANNELS.TTS_PLAY, filePath);
-  });
-
-  ttsPlayer.on("end", () => {
-    log("TTS end");
-    // Don't reset state here — TTS_PLAY_ENDED handles queue + state
-  });
-
-  ttsPlayer.on("error", (message) => {
-    logError("TTS error", message);
-    isSpeaking = false;
-    isSessionActive = false;
-    updateState("error", message);
-    startAutoHideTimer();
-  });
-
-  ttsPlayer.speak(text);
-}
-
-function playTTSFile(filePath: string): void {
-  log(`TTS play queued file: ${filePath}`);
-  unmuteSystemOnly();
-  currentPlayingFile = filePath;
-  playingTtsSessionId = currentSessionId;
-  sendToFloatWindow(IPC_CHANNELS.TTS_PLAY, filePath);
-}
+});
 
 function showOrb(): void {
   createFloatWindow();
   showFloatWindow();
   isOrbVisible = true;
-  sendToFloatWindow(IPC_CHANNELS.SHOW_WINDOW);
 }
 
 function hideOrb(): void {
@@ -1087,182 +1097,16 @@ function stopAutoHideTimer(): void {
   }
 }
 
-function runAppleScript(script: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = execFile("osascript", [], (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(stderr || err.message));
-      } else {
-        resolve(stdout);
-      }
-    });
-    child.stdin?.write(script);
-    child.stdin?.end();
-  });
+function muteSystemAndPauseMedia(): Promise<void> {
+  return volumeGuard.muteSystemAndPauseMedia();
 }
 
-async function muteSystemAndPauseMedia(): Promise<void> {
-  if (activeMutePromise) {
-    return activeMutePromise;
-  }
-
-  const muteAction = async () => {
-    log("Muting system and pausing Chrome media...");
-    
-    // 1. Pause Chrome playing tabs
-    try {
-      const script = `tell application "Google Chrome"
-      set pausedTabs to {}
-      if it is running then
-          repeat with w in windows
-              repeat with t in tabs of w
-                  try
-                      set isPlaying to execute t javascript "(function() {
-                          var played = false;
-                          function scan(root) {
-                              if (!root) return;
-                              var v = root.querySelectorAll('video, audio');
-                              for (var i = 0; i < v.length; i++) {
-                                  if (!v[i].paused && v[i].muted === false && (typeof v[i].volume !== 'number' || v[i].volume > 0)) {
-                                      v[i].setAttribute('data-diri-paused', 'true');
-                                      v[i].pause();
-                                      played = true;
-                                  }
-                              }
-                              root.querySelectorAll('*').forEach(function(el) {
-                                  if (el.shadowRoot) scan(el.shadowRoot);
-                              });
-                              root.querySelectorAll('iframe').forEach(function(f) {
-                                  try { if (f.contentDocument) scan(f.contentDocument); } catch(e) {}
-                              });
-                          }
-                          scan(document);
-                          return played;
-                      })()"
-                      if isPlaying is true then
-                          set end of pausedTabs to (id of t as string)
-                      end if
-                  end try
-              end repeat
-          end repeat
-      end if
-      return pausedTabs
-  end tell`;
-
-      const stdout = await runAppleScript(script);
-      const trimmed = stdout.trim();
-      if (trimmed) {
-        const newPaused = trimmed.split(",").map(id => id.trim());
-        for (const id of newPaused) {
-          if (!pausedChromeTabs.includes(id)) {
-            pausedChromeTabs.push(id);
-          }
-        }
-        log(`VolumeControl: Paused Chrome tabs (accumulated): ${pausedChromeTabs.join(", ")}`);
-      }
-    } catch (err) {
-      logError("VolumeControl: Chrome pause failed", err);
-    }
-
-    // 2. Mute system volume (for other browser/system sounds to ensure 100% silent recording)
-    try {
-      await execAsync("osascript -e 'set volume with output muted'");
-      isSystemMutedByApp = true;
-      log("VolumeControl: Muted system output");
-    } catch (err) {
-      logError("VolumeControl: Mute failed", err);
-    }
-  };
-
-  activeMutePromise = muteAction().finally(() => {
-    activeMutePromise = null;
-  });
-
-  return activeMutePromise;
+function unmuteSystemOnly(): Promise<void> {
+  return volumeGuard.unmuteSystemOnly();
 }
 
-async function unmuteSystemOnly(): Promise<void> {
-  if (activeMutePromise) {
-    log("unmuteSystemOnly: waiting for active mute operation to complete first...");
-    await activeMutePromise;
-  }
-
-  if (isSystemMutedByApp) {
-    try {
-      await execAsync("osascript -e 'set volume without output muted'");
-      isSystemMutedByApp = false;
-      log("VolumeControl: Unmuted system output");
-    } catch (err) {
-      logError("VolumeControl: Unmute failed", err);
-    }
-  }
-}
-
-async function restoreMediaOnly(): Promise<void> {
-  if (activeMutePromise) {
-    log("restoreMediaOnly: waiting for active mute operation to complete first...");
-    await activeMutePromise;
-  }
-
-  if (pausedChromeTabs.length > 0) {
-    try {
-      const idsString = pausedChromeTabs.map(id => `"${id}"`).join(", ");
-      const script = `tell application "Google Chrome"
-    if it is running then
-        repeat with w in windows
-            repeat with t in tabs of w
-                if (id of t as string) is in {${idsString}} then
-                    try
-                        execute t javascript "(function() {
-                            var found = false;
-                            function scan(root) {
-                                if (!root) return;
-                                var v = root.querySelectorAll('video[data-diri-paused=true], audio[data-diri-paused=true]');
-                                for (var i = 0; i < v.length; i++) {
-                                    v[i].play();
-                                    v[i].removeAttribute('data-diri-paused');
-                                    found = true;
-                                }
-                                root.querySelectorAll('*').forEach(function(el) {
-                                    if (el.shadowRoot) scan(el.shadowRoot);
-                                });
-                                root.querySelectorAll('iframe').forEach(function(f) {
-                                    try { if (f.contentDocument) scan(f.contentDocument); } catch(e) {}
-                                });
-                            }
-                            scan(document);
-                            if (!found) {
-                                function resumeFallback(root) {
-                                    if (!root) return;
-                                    var all = root.querySelectorAll('video, audio');
-                                    for (var i = 0; i < all.length; i++) {
-                                        if (all[i].paused && all[i].muted === false && (typeof all[i].volume !== 'number' || all[i].volume > 0)) {
-                                            all[i].play();
-                                        }
-                                    }
-                                    root.querySelectorAll('*').forEach(function(el) {
-                                        if (el.shadowRoot) resumeFallback(el.shadowRoot);
-                                    });
-                                    root.querySelectorAll('iframe').forEach(function(f) {
-                                        try { if (f.contentDocument) resumeFallback(f.contentDocument); } catch(e) {}
-                                    });
-                                }
-                                resumeFallback(document);
-                            }
-                        })()"
-                    end try
-                end if
-            end repeat
-        end repeat
-    end if
-end tell`;
-      await runAppleScript(script);
-      log(`VolumeControl: Resumed Chrome tabs: ${pausedChromeTabs.join(", ")}`);
-    } catch (err) {
-      logError("VolumeControl: Chrome resume failed", err);
-    }
-    pausedChromeTabs = [];
-  }
+function restoreMediaOnly(): Promise<void> {
+  return volumeGuard.restoreMediaOnly();
 }
 
 function updateState(state: string, message?: string, metadata?: Record<string, any>): void {
@@ -1279,43 +1123,8 @@ function sendToSettingsWindow(channel: string, ...args: unknown[]): void {
 }
 
 // ==================== 对话历史 ====================
-interface ChatEntry {
-  sender: "user" | "daisy";
-  text: string;
-  timestamp: number;
-}
 
-const MAX_HISTORY = 20;
-let conversationHistory: ChatEntry[] = [];
-
-function getHistoryFilePath(): string {
-  return path.join(app.getPath("userData"), "conversation-history.json");
-}
-
-function loadConversationHistory(): void {
-  try {
-    const p = getHistoryFilePath();
-    if (fs.existsSync(p)) {
-      conversationHistory = JSON.parse(fs.readFileSync(p, "utf-8"));
-    }
-  } catch { conversationHistory = []; }
-}
-
-function saveConversationHistory(): void {
-  try {
-    fs.writeFileSync(getHistoryFilePath(), JSON.stringify(conversationHistory), "utf-8");
-  } catch { /* ignore */ }
-}
-
-function addChatEntry(sender: "user" | "daisy", text: string): void {
-  if (!text.trim()) return;
-  conversationHistory.push({ sender, text: text.trim(), timestamp: Date.now() });
-  if (conversationHistory.length > MAX_HISTORY * 2) {
-    // Keep last MAX_HISTORY pairs (user + daisy)
-    conversationHistory = conversationHistory.slice(-MAX_HISTORY * 2);
-  }
-  saveConversationHistory();
-}
+const conversationHistoryStore = new ConversationHistory();
 
 function downloadWhisperModel(modelName: string): void {
   const modelInfo = WHISPER_MODELS[modelName];
@@ -1402,7 +1211,7 @@ function handleDownloadError(err: Error, modelPath: string): void {
 }
 
 function setupIpc(): void {
-  ipcMain.on("window:set-ignore-mouse", (event, ignore: boolean) => {
+  ipcMain.on(IPC_CHANNELS.SET_IGNORE_MOUSE, (event, ignore: boolean) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win && !win.isDestroyed()) {
       win.setIgnoreMouseEvents(ignore, { forward: true });
@@ -1426,7 +1235,12 @@ function setupIpc(): void {
   });
 
   ipcMain.on(IPC_CHANNELS.SEND_TEXT, (_event, text: string) => {
-    wakeAndStartListening();
+    // 文本输入路径不需要启动录音：直接中止旧会话并展示悬浮球。
+    // 原实现调用 wakeAndStartListening() 启动录音后又被 handleUserInput 置空
+    // asrSession，导致录音常驻无消费方，阻塞下一次录音。
+    abortAllTasks();
+    stopAutoHideTimer();
+    showOrb();
     sendToFloatWindow(IPC_CHANNELS.ASR_FINAL, text);
     handleUserInput(text);
   });
@@ -1453,17 +1267,11 @@ function setupIpc(): void {
   ipcMain.on(IPC_CHANNELS.TTS_PLAY_ENDED, (_event, filePath?: string) => {
     log("TTS playback ended (renderer notification)");
 
-    // Delete the played file
-    const fileToDelete = filePath || currentPlayingFile;
-    if (fileToDelete) {
-      fs.promises.unlink(fileToDelete).catch(() => {});
-    }
-    currentPlayingFile = null;
-
     // If TTS was from an aborted session, ignore this event
     if (playingTtsSessionId !== null && playingTtsSessionId !== currentSessionId) {
       log(`TTS_PLAY_ENDED ignored — stale session ${playingTtsSessionId} (current: ${currentSessionId})`);
       playingTtsSessionId = null;
+      ttsPipeline.stop();
       return;
     }
     playingTtsSessionId = null;
@@ -1471,72 +1279,12 @@ function setupIpc(): void {
     // If no longer speaking (aborted), ignore
     if (!isSpeaking) {
       log("TTS_PLAY_ENDED ignored — not speaking");
+      ttsPipeline.stop();
       return;
     }
 
-    // Play next queued TTS file
-    if (ttsFileQueue.length > 0) {
-      const nextFile = ttsFileQueue.shift()!;
-      log(`Playing next TTS file from queue (${ttsFileQueue.length} remaining)`);
-      playTTSFile(nextFile);
-      return;
-    }
-
-    // No more files — check if still synthesizing
-    if (activeTtsSynthesisSessionId !== null) {
-      log("Waiting for background TTS synthesis to complete...");
-      let waitCount = 0;
-      const waitInterval = setInterval(() => {
-        if (!isSpeaking) {
-          clearInterval(waitInterval);
-          return;
-        }
-        waitCount++;
-        if (ttsFileQueue.length > 0) {
-          clearInterval(waitInterval);
-          const nextFile = ttsFileQueue.shift()!;
-          log(`Synthesis wait over, playing queued file (${ttsFileQueue.length} remaining)`);
-          playTTSFile(nextFile);
-        } else if (waitCount >= 30 || activeTtsSynthesisSessionId === null) {
-          // Waited 15s (30 × 500ms) or synthesis finished
-          clearInterval(waitInterval);
-          if (ttsFileQueue.length > 0) {
-            const nextFile = ttsFileQueue.shift()!;
-            playTTSFile(nextFile);
-          } else {
-            isSpeaking = false;
-            ttsPlayer = null;
-            if (wasWokenByVoice) {
-              log("Continuous voice dialogue: loop back to listening");
-              startVoiceListening();
-            } else {
-              isSessionActive = false;
-              updateState("idle");
-              startAutoHideTimer();
-            }
-          }
-        }
-      }, 500);
-      return;
-    }
-
-    // All done
-    isSpeaking = false;
-    ttsPlayer = null;
-    // If ack just finished and LLM is still processing, don't hide — wait for done
-    if (toolAckPending) {
-      log("Ack finished, waiting for LLM final answer");
-      updateState("thinking");
-      return;
-    }
-    if (wasWokenByVoice) {
-      log("Continuous voice dialogue: loop back to listening");
-      startVoiceListening();
-    } else {
-      isSessionActive = false;
-      updateState("idle");
-      startAutoHideTimer();
-    }
+    // 事件驱动流水线：删除已播文件，若还有排队帧则立即播放，否则等待合成完成
+    ttsPipeline.onPlayEnded(filePath);
   });
 
   ipcMain.handle(IPC_CHANNELS.GET_CONFIG, () => {
@@ -1602,6 +1350,7 @@ function setupIpc(): void {
       if (cfg.VOLCENGINE_APP_ID !== undefined) config.asr.appId = cfg.VOLCENGINE_APP_ID;
       if (cfg.VOLCENGINE_ACCESS_TOKEN !== undefined) config.asr.accessToken = cfg.VOLCENGINE_ACCESS_TOKEN;
       if (cfg.VOLCENGINE_RESOURCE_ID !== undefined) config.asr.resourceId = cfg.VOLCENGINE_RESOURCE_ID;
+      if (cfg.VOLCENGINE_ASR_WS_URL !== undefined && cfg.VOLCENGINE_ASR_WS_URL.trim()) config.asr.wsUrl = cfg.VOLCENGINE_ASR_WS_URL;
       if (cfg.DEEPSEEK_API_KEY !== undefined) config.llm.apiKey = cfg.DEEPSEEK_API_KEY;
       if (cfg.DEEPSEEK_BASE_URL !== undefined) config.llm.baseUrl = cfg.DEEPSEEK_BASE_URL;
       if (cfg.DEEPSEEK_MODEL !== undefined) config.llm.model = cfg.DEEPSEEK_MODEL;
@@ -1631,6 +1380,8 @@ function setupIpc(): void {
         if (config.wakeWord.enabled) {
           setupWakeWord();
         } else {
+          // 释放麦克风捕获并停止旧监听器
+          setWakeWordCaptureEnabled(false);
           wakeWordMonitor?.stop();
         }
       }
@@ -1648,7 +1399,7 @@ function setupIpc(): void {
     let cliInstalled = whisperCli !== "whisper-cli" && fs.existsSync(whisperCli);
     if (!cliInstalled) {
       try {
-        await execAsync("which whisper-cli");
+        await execFileAsync("which", ["whisper-cli"]);
         cliInstalled = true;
       } catch { /* not installed */ }
     }
@@ -1691,13 +1442,11 @@ function setupIpc(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.HISTORY_GET, () => {
-    return conversationHistory;
+    return conversationHistoryStore.get();
   });
 
   ipcMain.handle(IPC_CHANNELS.HISTORY_CLEAR, () => {
-    conversationHistory = [];
-    saveConversationHistory();
-    log("Conversation history cleared");
+    conversationHistoryStore.clear();
   });
 
   // ==================== 应用更新 ====================
@@ -1755,7 +1504,7 @@ function setupIpc(): void {
   });
 
   // Right-click context menu (triggered from preload via IPC)
-  ipcMain.on("context-menu:show", (_event, { isInput, selection }: { isInput: boolean; selection: string }) => {
+  ipcMain.on(IPC_CHANNELS.CONTEXT_MENU_SHOW, (_event, { isInput, selection }: { isInput: boolean; selection: string }) => {
     const win = BrowserWindow.fromWebContents(_event.sender);
     if (!win) return;
 

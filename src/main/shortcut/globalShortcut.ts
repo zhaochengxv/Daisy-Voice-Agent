@@ -230,7 +230,10 @@ export class GlobalShortcut extends EventEmitter {
       }
       this.pressedKeys.add(key);
 
-      if (key !== "rightalt" && this.pressedTimer) {
+      // 若已有一个 pending 的 pressedTimer（此前已匹配目标组合），而当前按键
+      // 不属于目标快捷键，说明组合被无关键打断，取消计时防误触发。
+      // 不能用硬编码 rightalt 判断——用户可能配置了其他快捷键。
+      if (!this.shortcutContainsKey(this.targetKeys, key) && this.pressedTimer) {
         clearTimeout(this.pressedTimer);
         this.pressedTimer = null;
       }

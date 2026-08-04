@@ -131,6 +131,12 @@ export class WakeWordMonitor extends EventEmitter {
       const text = await this.transcribeWithWhisper(audioData);
       if (text) {
         log(`WakeWordMonitor: whisper.cpp result="${text}"`);
+        // 处理期间 monitor 可能已被 stop()/pause()（锁屏/关闭唤醒词），
+        // 在途音频不得再触发 wake，否则破坏隐私安全。
+        if (this.state === "paused") {
+          log("WakeWordMonitor: paused while processing, ignoring wake result");
+          return;
+        }
         if (this.containsWakeWord(text)) {
           const command = this.extractCommand(text);
           log(`WakeWordMonitor: wake word detected! command="${command}"`);

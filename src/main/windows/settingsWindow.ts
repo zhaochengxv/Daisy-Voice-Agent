@@ -4,7 +4,7 @@ import { log, logError } from "../utils/logger";
 
 let settingsWindow: BrowserWindow | null = null;
 
-export function createSettingsWindow(): BrowserWindow {
+export function createSettingsWindow(hidden = false): BrowserWindow {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     if (settingsWindow.isMinimized()) {
       settingsWindow.restore();
@@ -25,6 +25,7 @@ export function createSettingsWindow(): BrowserWindow {
     backgroundColor: "#eef2fa",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 18, y: 18 },
+    show: false, // 启动时预创建但不弹出，避免每次启动打扰用户
     webPreferences: {
       preload: path.join(__dirname, "../../preload/index.js"),
       contextIsolation: true,
@@ -34,6 +35,11 @@ export function createSettingsWindow(): BrowserWindow {
   });
 
   settingsWindow.loadFile(path.join(__dirname, "../../renderer-settings/settings.html"));
+
+  if (!hidden) {
+    settingsWindow.show();
+    settingsWindow.focus();
+  }
 
   // Intercept target="_blank" links → open in system default browser instead of Electron popup
   settingsWindow.webContents.setWindowOpenHandler(({ url }) => {

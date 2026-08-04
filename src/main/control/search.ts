@@ -2,6 +2,18 @@ import { log, logError } from "../utils/logger";
 import { config } from "../config/env";
 
 const FIRECRAWL_API_URL = "https://api.firecrawl.dev/v2/search";
+const FETCH_TIMEOUT_MS = 15000;
+
+/** 带超时的 fetch：防止第三方接口慢响应挂起 LLM 工具循环 */
+async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 interface FirecrawlSearchResult {
   url?: string;
@@ -21,7 +33,7 @@ export async function webSearch(query: string): Promise<string> {
   try {
     const firecrawlQuery = simplifyQueryForFirecrawl(query);
     log(`webSearch: attempting Firecrawl search for: "${firecrawlQuery}"${firecrawlQuery !== query ? ` (original: "${query}")` : ""}`);
-    const response = await fetch(FIRECRAWL_API_URL, {
+    const response = await fetchWithTimeout(FIRECRAWL_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -107,7 +119,7 @@ interface DDGResult {
 
 async function ddgSearch(query: string): Promise<DDGResult[]> {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -146,7 +158,7 @@ async function ddgSearch(query: string): Promise<DDGResult[]> {
 export async function searchWallpapers(query: string): Promise<string> {
   try {
     log(`searchWallpapers: querying Wallhaven for "${query}"`);
-    const response = await fetch(`https://wallhaven.cc/api/v1/search?q=${encodeURIComponent(query)}`);
+    const response = await fetchWithTimeout(`https://wallhaven.cc/api/v1/search?q=${encodeURIComponent(query)}`);
     if (!response.ok) {
       throw new Error(`Wallhaven HTTP ${response.status}`);
     }
@@ -181,7 +193,7 @@ export async function searchWallpapers(query: string): Promise<string> {
 export async function scrapeUrl(url: string): Promise<string> {
   try {
     log(`scrapeUrl: attempting Firecrawl scrape for: "${url}"`);
-    const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
+    const response = await fetchWithTimeout("https://api.firecrawl.dev/v1/scrape", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

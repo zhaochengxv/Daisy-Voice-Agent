@@ -46,8 +46,8 @@ export function initAudioRecorder(
   // Cleanup old listeners if any
   ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_DATA);
   ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_ERROR);
-  ipcMain.removeAllListeners("audio:ready");
-  ipcMain.removeAllListeners("audio:stopped");
+  ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_READY);
+  ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_STOPPED);
 
   ipcMain.on(IPC_CHANNELS.AUDIO_DATA, (_event, base64: string) => {
     // The renderer only streams while recording or while wake-word monitoring
@@ -72,7 +72,7 @@ export function initAudioRecorder(
   });
 
   // Handle ACK events from renderer
-  ipcMain.on("audio:ready", () => {
+  ipcMain.on(IPC_CHANNELS.AUDIO_READY, () => {
     log(`[recorder] IPC audio:ready received.`);
     if (currentState === RecorderState.STARTING) {
       if (startTimeout) {
@@ -85,7 +85,7 @@ export function initAudioRecorder(
     }
   });
 
-  ipcMain.on("audio:stopped", () => {
+  ipcMain.on(IPC_CHANNELS.AUDIO_STOPPED, () => {
     log(`[recorder] IPC audio:stopped received.`);
     if (currentState === RecorderState.STOPPING) {
       if (stopTimeout) {

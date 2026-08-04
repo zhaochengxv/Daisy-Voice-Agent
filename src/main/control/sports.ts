@@ -91,7 +91,14 @@ export async function sportsSchedule(query: string): Promise<string> {
     }
 
     const url = `${API_BASE}/eventsnextleague.php?id=${league.id}`;
-    const response = await fetch(url);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let response: Response;
+    try {
+      response = await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }

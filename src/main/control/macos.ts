@@ -1,4 +1,4 @@
-import { exec, execFile } from "node:child_process";
+import { exec, execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
@@ -8,6 +8,8 @@ import ffmpegStaticPath from "ffmpeg-static";
 import { log, logError } from "../utils/logger";
 import { matchApp } from "../command/router";
 import { getBundledBin, config } from "../config/env";
+import { runAppleScript } from "../utils/appleScript";
+import { switchAudioOutput as sharedSwitchAudioOutput } from "../utils/audioSwitch";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -32,15 +34,6 @@ function expandPath(p: string): string {
     return path.join(os.homedir(), p.slice(1));
   }
   return p;
-}
-
-export async function runAppleScript(script: string): Promise<string> {
-  try {
-    const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
-    return stdout.trim();
-  } catch (error) {
-    throw new Error(`AppleScript 执行失败: ${error instanceof Error ? error.message : String(error)}`);
-  }
 }
 
 export async function getDefaultBrowserBundleId(): Promise<string> {
@@ -73,19 +66,19 @@ export async function openApplication(name: string): Promise<string> {
 
   try {
     if (useBundleId) {
-      await execAsync(`open -b "${target}"`);
+      await execFileAsync("open", ["-b", target]);
       return `已打开默认浏览器`;
     } else {
-      await runAppleScript(`tell application "${target}" to activate`);
+      await runAppleScript(`tell application "${appleScriptQuote(target)}" to activate`);
       return `已打开 ${target}`;
     }
   } catch {
     try {
       if (useBundleId) {
-        await execAsync(`open -b com.apple.Safari`);
+        await execFileAsync("open", ["-b", "com.apple.Safari"]);
         return `已打开默认浏览器`;
       } else {
-        await execAsync(`open -a "${target}"`);
+        await execFileAsync("open", ["-a", target]);
         return `已打开 ${target}`;
       }
     } catch (error) {
@@ -107,8 +100,7 @@ export async function quitApplication(name: string): Promise<string> {
         targetName = "Safari";
       } else {
         try {
-          const { stdout } = await execAsync(`osascript -e 'tell application "Finder" to name of application file id "${bundleId}"'`);
-          const resolvedName = stdout.trim().replace(/\.app$/, "");
+          const resolvedName = (await runAppleScript(`tell application "Finder" to name of application file id "${appleScriptQuote(bundleId)}"`)).trim().replace(/\.app$/, "");
           if (resolvedName) targetName = resolvedName;
         } catch {
           targetName = "Safari";
@@ -123,7 +115,7 @@ export async function quitApplication(name: string): Promise<string> {
 
     log(`quitApplication: resolved "${name}" -> "${targetName}"`);
 
-    const checkScript = `tell application "System Events" to exists process "${targetName}"`;
+    const checkScript = `tell application "System Events" to exists process "${appleScriptQuote(targetName)}"`;
     const beforeCheck = await runAppleScript(checkScript).catch(() => "false");
     if (beforeCheck.trim() === "false") {
       log(`quitApplication: process "${targetName}" is not running`);
@@ -131,7 +123,7 @@ export async function quitApplication(name: string): Promise<string> {
     }
 
     try {
-      await execAsync(`osascript -e 'tell application "${targetName}" to quit'`, { timeout: 3000 });
+      await runAppleScript(`tell application "${appleScriptQuote(targetName)}" to quit`);
     } catch {
       // Ignore AppleScript error as Electron apps close abruptly and throw connection invalid errors
     }
@@ -145,7 +137,7 @@ export async function quitApplication(name: string): Promise<string> {
     }
 
     try {
-      await execAsync(`pkill -x "${targetName}"`, { timeout: 2000 });
+      await execFileAsync("pkill", ["-x", targetName], { timeout: 2000 });
       await new Promise((resolve) => setTimeout(resolve, 300));
       const finalCheck = await runAppleScript(checkScript).catch(() => "false");
       if (finalCheck.trim() === "false") {
@@ -242,7 +234,8 @@ export async function pressKeys(keys: string): Promise<string> {
       if (key.startsWith("key code")) {
         script = `tell application "System Events" to ${key}${modifierList ? ` using {${modifierList}}` : ""}`;
       } else {
-        script = `tell application "System Events" to keystroke "${key}"${modifierList ? ` using {${modifierList}}` : ""}`;
+        const escapedKey = key.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        script = `tell application "System Events" to keystroke "${escapedKey}"${modifierList ? ` using {${modifierList}}` : ""}`;
       }
     }
 
@@ -291,7 +284,8 @@ export async function readSelectedText(): Promise<string> {
     // Restore original clipboard
     if (originalClipboard) {
       try {
-        await runAppleScript(`set the clipboard to "${originalClipboard.replace(/"/g, '\\"')}"`);
+        const escapedClip = originalClipboard.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        await runAppleScript(`set the clipboard to "${escapedClip}"`);
       } catch {
         // ignore restore failure
       }
@@ -500,7 +494,7 @@ export async function readFile(filePath: string): Promise<string> {
     const ext = path.extname(resolved).toLowerCase();
     let content: string;
     if (ext === ".docx" || ext === ".doc") {
-      const { stdout } = await execAsync(`textutil -convert txt -stdout "${resolved}"`);
+      const { stdout } = await execFileAsync("textutil", ["-convert", "txt", "-stdout", resolved]);
       content = stdout;
     } else {
       content = fs.readFileSync(resolved, "utf-8");
@@ -551,7 +545,8 @@ export async function deleteFile(filePath: string): Promise<string> {
     }
     const stat = fs.statSync(resolved);
     if (stat.isDirectory()) {
-      fs.rmdirSync(resolved);
+      // 递归删除非空目录（含空目录）；force 忽略不存在的目标
+      fs.rmSync(resolved, { recursive: true, force: true });
     } else {
       fs.unlinkSync(resolved);
     }
@@ -587,34 +582,85 @@ export async function downloadMedia(url: string, type: string = "video", destina
     }
 
     log(`downloadMedia: starting download for ${url} (type: ${type}) to saveDir: ${saveDir}`);
-    
-    let ytdlpPath = getBundledBin("yt-dlp");
-    
-    let args = "";
+
+    const ytdlpPath = getBundledBin("yt-dlp");
+    const args: string[] = ["--newline", "-P", saveDir];
     if (type === "audio") {
-      args = `-x --audio-format mp3 --audio-quality 0 -o "%(title)s.%(ext)s"`;
+      args.push("-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", "%(title)s.%(ext)s");
     } else {
-      args = `-f "bv*+ba/b" --merge-output-format mp4 -o "%(title)s.mp4"`;
+      args.push("-f", "bv*+ba/b", "--merge-output-format", "mp4", "-o", "%(title)s.mp4");
     }
-    
-    const cmd = `"${ytdlpPath}" ${args} -P "${saveDir}" "${url}"`;
-    log(`downloadMedia: running command: ${cmd}`);
-    
-    const { stdout } = await execAsync(cmd);
-    
-    const destMatch = stdout.match(/Destination:\s*(.+)/i) || stdout.match(/Merging formats into\s*"(.*?)"/i);
-    let filename = "";
-    if (destMatch && destMatch[1]) {
-      filename = path.basename(destMatch[1].replace(/"/g, "").trim());
-    }
-    
-    const savedName = filename ? `「${filename}」` : "媒体文件";
+    args.push(url);
+
+    log(`downloadMedia: running command: ${ytdlpPath} ${args.join(" ")}`);
+
+    // 后台执行：不阻塞 LLM 工具循环，进度/错误输出仅在日志记录
+    const child = spawn(ytdlpPath, args, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    activeDownloads.add(child);
+
+    const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000;
+    const killer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch { /* ignore */ }
+    }, DOWNLOAD_TIMEOUT_MS);
+    killer.unref();
+
+    child.on("exit", (code) => {
+      clearTimeout(killer);
+      activeDownloads.delete(child);
+      log(`downloadMedia: finished with code ${code}${code === 0 ? "" : ` (url: ${url})`}`);
+    });
+    child.on("error", (err) => {
+      clearTimeout(killer);
+      activeDownloads.delete(child);
+      logError("downloadMedia spawn error", err);
+    });
+
+    const savedName = type === "audio" ? "音频" : "视频";
     const destName = saveDir.includes("Desktop") ? "桌面" : "下载（Downloads）文件夹";
-    return `已成功下载${type === "audio" ? "音频" : "视频"}${savedName}并保存至${destName}。`;
+    return `已开始后台下载${savedName}，将保存至${destName}。大文件可能需要几分钟，请稍后查看下载文件夹。`;
   } catch (error) {
     logError("downloadMedia failed", error);
     return `下载失败: ${error instanceof Error ? error.message : String(error)}`;
   }
+}
+
+/** 追踪所有活动下载进程，供取消/清理使用 */
+export const activeDownloads = new Set<import("node:child_process").ChildProcess>();
+
+/**
+ * 高危命令黑名单：命中即拒绝执行，防止 LLM 或用户误触毁灭性操作。
+ * 仅拦截明确指向系统级/不可逆破坏的命令；普通文件操作与软件安装不受影响。
+ */
+const DANGEROUS_SHELL_PATTERNS: Array<{ re: RegExp; reason: string }> = [
+  // 根目录级递归删除
+  { re: /\brm\s+(-[a-z]*r[a-z]*f?|-[a-z]*f[a-z]*r?|--recursive|--force)[a-z\s]*\s+\/\b|\brm\s+(-[a-z]*r[a-z]*f?)\s+\/\s*[a-z]?\s*(--no-preserve-root)?/i, reason: "删除根目录/关键路径" },
+  // 磁盘擦除 / 格式化
+  { re: /\bdd\b[^|;]*\bof=\/dev\/(sd|disk|rdisk)\w*/i, reason: "磁盘擦除或格式化" },
+  // 系统电源
+  { re: /\b(shutdown|reboot|poweroff|halt)\b/i, reason: "关机/重启/断电" },
+  // 内核模块操作
+  { re: /\b(modprobe|insmod|rmmod)\b/i, reason: "内核模块加载/卸载" },
+  // 引导加载器
+  { re: /\b(update-grub|grub-install)\b/i, reason: "引导加载器配置" },
+  // 用户权限管理（高危提权面）
+  { re: /\b(useradd|userdel|usermod|groupadd|groupdel|groupmod|passwd|chroot|su\s+-)/i, reason: "系统用户/权限管理" },
+  // 防火墙
+  { re: /\b(iptables|ip6tables|nft\b|ufw|firewall-cmd|firewalld)/i, reason: "防火墙规则变更" },
+  // 卷管理
+  { re: /\b(lvm|pvcreate|vgcreate|lvcreate|pvmove|vgremove|lvremove)\b/i, reason: "逻辑卷管理" },
+];
+
+export function isDangerousShellCommand(command: string): string | null {
+  for (const { re, reason } of DANGEROUS_SHELL_PATTERNS) {
+    if (re.test(command)) return reason;
+  }
+  return null;
 }
 
 export async function listDirectory(dirPath: string): Promise<string> {
@@ -652,8 +698,9 @@ export async function runShellCommand(command: string): Promise<string> {
 
 export async function createNote(title: string, body: string): Promise<string> {
   try {
-    const escapedTitle = title.replace(/"/g, '\\"');
-    const escapedBody = body ? body.replace(/"/g, '\\"') : "";
+    // 双层转义：\ 与 " 都要转，防止 \" 组合绕过字符串字面量
+    const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const escapedBody = body ? body.replace(/\\/g, "\\\\").replace(/"/g, '\\"') : "";
 
     // Auto-detect the first account
     const accountName = await runAppleScript(`
@@ -664,7 +711,7 @@ export async function createNote(title: string, body: string): Promise<string> {
 
     await runAppleScript(`
       tell application "Notes"
-        tell account "${accountName.replace(/"/g, '\\"')}"
+        tell account "${accountName.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"
           make new note with properties {name:"${escapedTitle}", body:"${escapedBody}"}
         end tell
       end tell
@@ -677,7 +724,7 @@ export async function createNote(title: string, body: string): Promise<string> {
 
 export async function searchNotes(query: string): Promise<string> {
   try {
-    const escaped = query.replace(/"/g, '\\"');
+    const escaped = query.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const result = await runAppleScript(`
       tell application "Notes"
         set output to ""
@@ -695,8 +742,8 @@ export async function searchNotes(query: string): Promise<string> {
 
 export async function createReminder(title: string, dueDate?: string, notes?: string): Promise<string> {
   try {
-    const escapedTitle = title.replace(/"/g, '\\"');
-    const escapedNotes = notes ? notes.replace(/"/g, '\\"') : "";
+    const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const escapedNotes = notes ? notes.replace(/\\/g, "\\\\").replace(/"/g, '\\"') : "";
     let script = `
       tell application "Reminders"
         set newReminder to make new reminder with properties {name:"${escapedTitle}"}
@@ -734,9 +781,9 @@ export async function createReminder(title: string, dueDate?: string, notes?: st
 
 export async function createCalendarEvent(title: string, startDate: string, endDate?: string, location?: string, notes?: string): Promise<string> {
   try {
-    const escapedTitle = title.replace(/"/g, '\\"');
-    const escapedLocation = location ? location.replace(/"/g, '\\"') : "";
-    const escapedNotes = notes ? notes.replace(/"/g, '\\"') : "";
+    const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const escapedLocation = location ? location.replace(/\\/g, "\\\\").replace(/"/g, '\\"') : "";
+    const escapedNotes = notes ? notes.replace(/\\/g, "\\\\").replace(/"/g, '\\"') : "";
 
     const startParts = startDate.trim().split(/[\s/]/);
     const startDatePart = startParts[0].split("-");
@@ -782,7 +829,7 @@ export async function createCalendarEvent(title: string, startDate: string, endD
 
     let script = `
       tell application "Calendar"
-        tell calendar "${calName.replace(/"/g, '\\"')}"
+        tell calendar "${calName.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"
           set startDate to (current date)
           set year of startDate to ${sy}
           set month of startDate to ${sm}
@@ -837,17 +884,29 @@ export async function getCalendarEvents(days: number): Promise<string> {
 
 export async function setTimer(seconds: number): Promise<string> {
   try {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
+    const safeSeconds = Math.max(1, Math.floor(seconds));
+    const mins = Math.floor(safeSeconds / 60);
+    const secs = safeSeconds % 60;
     const desc = mins > 0 ? `${mins}分${secs > 0 ? secs + "秒" : ""}` : `${secs}秒`;
 
-    const cmd = `nohup bash -c 'sleep ${seconds} && afplay /System/Library/Sounds/Glass.aiff && osascript -e "display notification \\"计时器完成：${desc}\\" with title \\"Daisy 计时器\\"" ' > /dev/null 2>&1 &`;
+    // 时间与文案均为应用内生成的安全值，无用户输入注入面
+    const cmd = `nohup bash -c 'sleep ${safeSeconds} && afplay /System/Library/Sounds/Glass.aiff && osascript -e "display notification \\"计时器完成：${desc}\\" with title \\"Daisy 计时器\\"" ' > /dev/null 2>&1 &`;
     await execAsync(cmd);
 
     return `已设置计时器：${desc}，时间到了会播放提示音`;
   } catch (error) {
     return `设置计时器失败: ${error instanceof Error ? error.message : String(error)}`;
   }
+}
+
+/** shell 单引号字符串安全转义：包裹在 '...' 内，仅需把 ' 替换为 '\'' */
+function shellSingleQuote(text: string): string {
+  return "'" + text.replace(/'/g, "'\\''") + "'";
+}
+
+/** AppleScript 字符串字面量安全转义：包在双引号内，需转义 \ 与 " */
+function appleScriptQuote(text: string): string {
+  return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 export async function setAlarm(time: string, label?: string): Promise<string> {
@@ -860,6 +919,10 @@ export async function setAlarm(time: string, label?: string): Promise<string> {
     const d = parseInt(datePart[2]);
     const h = parseInt(timePart[0]);
     const min = parseInt(timePart[1] || "0");
+
+    if (isNaN(y) || isNaN(m) || isNaN(d) || isNaN(h) || isNaN(min)) {
+      return `闹钟时间格式无效：${time}，请使用 YYYY-MM-DD HH:MM 格式`;
+    }
 
     const now = new Date();
     const alarmDate = new Date(y, m - 1, d, h, min, 0);
@@ -880,14 +943,19 @@ export async function setAlarm(time: string, label?: string): Promise<string> {
       timeDesc = `${Math.round(diffMins / 1440 * 10) / 10}天后`;
     }
 
-    const alarmLabel = label ? label.replace(/"/g, '\\"') : "闹钟";
+    const alarmLabel = (label && label.trim() ? label.trim() : "闹钟");
     const alarmTimeStr = `${m}月${d}日 ${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    const asLabel = appleScriptQuote(alarmLabel);
+    const asTime = appleScriptQuote(alarmTimeStr);
+    const notifyScript = shellSingleQuote(
+      `osascript -e "display notification \\"${asLabel}：${asTime}\\" with title \\"Daisy 闹钟\\" sound name \\"Sosumi\\""`
+    );
 
-    // Background process: sleep until alarm time, then play alarm sound repeatedly + notification
-    const cmd = `nohup bash -c 'sleep ${diffSec} && for i in 1 2 3 4 5; do afplay /System/Library/Sounds/Alarm.aiff 2>/dev/null || afplay /System/Library/Sounds/Sosumi.aiff; sleep 1; done && osascript -e "display notification \\"${alarmLabel}：${alarmTimeStr}\\" with title \\"Daisy 闹钟\\" sound name \\"Sosumi\\"" ' > /dev/null 2>&1 &`;
+    // 用户输入的 label 经 AppleScript 转义后包裹进单引号脚本，无 shell 注入面
+    const cmd = `nohup bash -c 'sleep ${diffSec} && for i in 1 2 3 4 5; do afplay /System/Library/Sounds/Alarm.aiff 2>/dev/null || afplay /System/Library/Sounds/Sosumi.aiff; sleep 1; done && ${notifyScript}' > /dev/null 2>&1 &`;
     await execAsync(cmd);
 
-    return `已设置闹钟「${label || "闹钟"}」，时间：${alarmTimeStr}（${timeDesc}响起）`;
+    return `已设置闹钟「${alarmLabel}」，时间：${alarmTimeStr}（${timeDesc}响起）`;
   } catch (error) {
     return `设置闹钟失败: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -895,7 +963,7 @@ export async function setAlarm(time: string, label?: string): Promise<string> {
 
 export async function searchMaps(query: string): Promise<string> {
   try {
-    await execAsync(`open "maps://?q=${encodeURIComponent(query)}"`);
+    await execFileAsync("open", ["maps://?q=" + encodeURIComponent(query)]);
     return `已在地图中搜索「${query}」`;
   } catch (error) {
     return `地图搜索失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -908,7 +976,8 @@ export async function openUrl(url: string): Promise<string> {
     if (!/^https?:\/\//.test(finalUrl)) {
       finalUrl = "https://" + finalUrl;
     }
-    await execAsync(`open "${finalUrl}"`);
+    // 用 execFile 数组参数打开，彻底避免 shell 注入面（URL 可能含引号等特殊字符）
+    await execFileAsync("open", [finalUrl]);
     return `已用默认浏览器打开 ${finalUrl}`;
   } catch (error) {
     return `打开网址失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -916,39 +985,12 @@ export async function openUrl(url: string): Promise<string> {
 }
 
 export async function switchAudioOutput(deviceName: string): Promise<string> {
-  try {
-    // List devices to find the best match
-    const SW = getBundledBin("SwitchAudioSource");
-    const { stdout } = await execAsync(`"${SW}" -a -t output`);
-    const lines = stdout.split("\n").map((l) => l.replace(/\s*\(.*\)\s*$/, "").trim()).filter(Boolean);
-
-    const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, "");
-    const target = deviceName.toLowerCase();
-    const targetNorm = normalize(deviceName);
-
-    let best = lines.find((d) => d.toLowerCase() === target);
-    if (!best) {
-      best = lines.find((d) => normalize(d) === targetNorm);
-    }
-    if (!best) {
-      best = lines.find((d) => d.toLowerCase().includes(target) || target.includes(d.toLowerCase()));
-    }
-    if (!best) {
-      best = lines.find((d) => normalize(d).includes(targetNorm) || targetNorm.includes(normalize(d)));
-    }
-    // "声卡"/"音频接口" → try to find a pro audio interface device
-    if (!best && /声卡|音频接口|audio\s*interface/i.test(deviceName)) {
-      best = lines.find((d) => /SSL|audio|interface|usb|thunderbolt|firewire|rme|focusrite|apollo|motu|ua[ -]|volt/i.test(d));
-    }
-    if (!best) {
-      return `找不到音频设备「${deviceName}」。当前可用设备：${lines.join("、")}`;
-    }
-    await execAsync(`"${SW}" -t output -s "${best}"`);
-    log(`switchAudioOutput: switched to "${best}"`);
-    return `已切换音频输出到「${best}」`;
-  } catch (error) {
-    return `切换音频输出失败: ${error instanceof Error ? error.message : String(error)}`;
+  const result = await sharedSwitchAudioOutput(deviceName);
+  if (!result.device) {
+    const available = result.available.length > 0 ? `。当前可用设备：${result.available.join("、")}` : "";
+    return `找不到音频设备「${deviceName}」${available}`;
   }
+  return `已切换音频输出到「${result.device}」`;
 }
 
 export async function trimVideo(source: string, start: string, end: string, output?: string): Promise<string> {
@@ -964,13 +1006,14 @@ export async function trimVideo(source: string, start: string, end: string, outp
     if (dur <= 0) return `截取时间范围无效：${start} 到 ${end}`;
 
     const ffmpeg = getFfmpegPath();
+    // 流拷贝（-c copy）无需重编码，接近秒级完成；-ss 置于 -i 前做快速定位
     const args = [
       "-y", "-ss", start, "-i", src, "-t", String(dur),
-      "-c:v", "libx264", "-preset", "fast", "-c:a", "aac",
+      "-c", "copy", "-avoid_negative_ts", "make_zero",
       "-movflags", "+faststart", outPath,
     ];
     log(`trimVideo: ${ffmpeg} ${args.join(" ")}`);
-    await execFileAsync(ffmpeg, args, { timeout: 120000 });
+    await execFileAsync(ffmpeg, args, { timeout: 60000 });
     return `已截取视频片段，保存至「${outName}」（${dur} 秒）`;
   } catch (error) {
     return `视频截取失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -1009,6 +1052,43 @@ export async function convertVideo(source: string, format: string, output?: stri
     return `已转换视频格式，保存至「${outName}」`;
   } catch (error) {
     return `视频格式转换失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/** 从音视频文件中提取音频轨道（默认 mp3，支持 m4a/wav/flac/ogg） */
+export async function extractAudio(source: string, format: string = "mp3", output?: string): Promise<string> {
+  try {
+    const src = expandPath(source);
+    if (!fs.existsSync(src)) return `找不到源文件「${source}」`;
+
+    const normalizedFormat = format.trim().replace(/^\./, "").toLowerCase();
+    const baseName = path.basename(src, path.extname(src));
+    const outPath = resolveOutputPath(src, output, `${baseName}.${normalizedFormat}`);
+    const outName = path.basename(outPath);
+
+    const ffmpeg = getFfmpegPath();
+    const args = ["-y", "-i", src, "-vn", "-map", "0:a:0"];
+
+    if (normalizedFormat === "mp3") {
+      args.push("-c:a", "libmp3lame", "-q:a", "2");
+    } else if (normalizedFormat === "m4a") {
+      args.push("-c:a", "aac");
+    } else if (normalizedFormat === "wav") {
+      args.push("-c:a", "pcm_s16le");
+    } else if (normalizedFormat === "flac") {
+      args.push("-c:a", "flac");
+    } else if (normalizedFormat === "ogg") {
+      args.push("-c:a", "libvorbis");
+    } else {
+      args.push("-c:a", "libmp3lame", "-q:a", "2");
+    }
+    args.push(outPath);
+
+    log(`extractAudio: ${ffmpeg} ${args.join(" ")}`);
+    await execFileAsync(ffmpeg, args, { timeout: 300000 });
+    return `已提取音频，保存至「${outName}」`;
+  } catch (error) {
+    return `音频提取失败: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -1466,8 +1546,15 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
         );
       case "list_directory":
         return await listDirectory(String(args.path ?? "~/Desktop"));
-      case "run_shell_command":
-        return await runShellCommand(String(args.command));
+      case "run_shell_command": {
+        const shellCmd = String(args.command);
+        const danger = isDangerousShellCommand(shellCmd);
+        if (danger) {
+          log(`run_shell_command blocked (${danger}): ${shellCmd.slice(0, 200)}`);
+          return `已阻止危险命令：${danger}（${shellCmd.slice(0, 100)}）。该命令可能对系统造成不可逆破坏，Daisy 不会执行。`;
+        }
+        return await runShellCommand(shellCmd);
+      }
       case "create_note":
         return await createNote(String(args.title), String(args.body ?? ""));
       case "search_notes":
@@ -1500,6 +1587,8 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
         return await trimVideo(String(args.source), String(args.start), String(args.end), args.output ? String(args.output) : undefined);
       case "convert_video":
         return await convertVideo(String(args.source), String(args.format), args.output ? String(args.output) : undefined);
+      case "extract_audio":
+        return await extractAudio(String(args.source), args.format ? String(args.format) : "mp3", args.output ? String(args.output) : undefined);
       case "convert_document":
         return await convertDocument(String(args.source), String(args.target));
       case "edit_document":

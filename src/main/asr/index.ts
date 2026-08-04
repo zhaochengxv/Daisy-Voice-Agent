@@ -90,6 +90,7 @@ export class AsrSession extends EventEmitter {
     let stableCount = 0;
     let lastText = this.lastText;
     let elapsed = 0;
+    const STABLE_LIMIT = 5; // 5 × 300ms = 1.5s 稳定
     const checkStable = () => {
       if (this.finalEmitted) return;
       elapsed += 300;
@@ -103,9 +104,9 @@ export class AsrSession extends EventEmitter {
         stableCount++;
       }
 
-      // Finish if: stable for 3s (10 checks) with text, or max 10s elapsed
-      // Longer wait gives server more time to return complete result
-      if ((this.lastText.length > 0 && stableCount >= 10) || elapsed >= 10000) {
+      // Finish if: stable for 1.5s (5 checks) with text, or max 10s elapsed
+      // 优先级：isLastPackage 即时返回；此轮询作为兜底，缩短稳定阈值以降低感知延迟
+      if ((this.lastText.length > 0 && stableCount >= STABLE_LIMIT) || elapsed >= 10000) {
         log(`ASR: finish (stable ${stableCount * 300}ms, elapsed ${elapsed}ms), lastText="${this.lastText}"`);
         this.finish();
       } else {

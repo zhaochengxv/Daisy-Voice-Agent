@@ -103,8 +103,8 @@ const api: DiriAPI = {
   sendRendererLog: (message: string) => ipcRenderer.send(IPC_CHANNELS.RENDERER_LOG, message),
   sendTtsPlayEnded: () => ipcRenderer.send(IPC_CHANNELS.TTS_PLAY_ENDED),
   muteCurrentTts: () => ipcRenderer.send(IPC_CHANNELS.TTS_MUTE_CURRENT),
-  sendAudioReady: () => ipcRenderer.send("audio:ready"),
-  sendAudioStopped: () => ipcRenderer.send("audio:stopped"),
+  sendAudioReady: () => ipcRenderer.send(IPC_CHANNELS.AUDIO_READY),
+  sendAudioStopped: () => ipcRenderer.send(IPC_CHANNELS.AUDIO_STOPPED),
 
   getWhisperStatus: (modelName?: string) => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_STATUS, modelName),
   downloadWhisperModel: (modelName: string) => ipcRenderer.send(IPC_CHANNELS.WHISPER_DOWNLOAD, modelName),
@@ -141,8 +141,8 @@ const api: DiriAPI = {
   onStartRecording: createListener(IPC_CHANNELS.START_RECORDING),
   onStopRecording: createListener(IPC_CHANNELS.STOP_RECORDING),
   onWakeWordEnabled: createListener<boolean>(IPC_CHANNELS.AUDIO_WAKE_WORD_ENABLED),
-  onSetDocked: createListener<boolean>("set-docked"),
-  setIgnoreMouse: (ignore: boolean) => ipcRenderer.send("window:set-ignore-mouse", ignore),
+  onSetDocked: createListener<boolean>(IPC_CHANNELS.SET_DOCKED),
+  setIgnoreMouse: (ignore: boolean) => ipcRenderer.send(IPC_CHANNELS.SET_IGNORE_MOUSE, ignore),
 };
 
 contextBridge.exposeInMainWorld("diriAPI", api);
@@ -154,5 +154,5 @@ window.addEventListener("contextmenu", (e: MouseEvent) => {
   const target = e.target as HTMLElement;
   const isInput = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
   const selection = window.getSelection()?.toString() || "";
-  ipcRenderer.send("context-menu:show", { isInput, selection });
+  ipcRenderer.send(IPC_CHANNELS.CONTEXT_MENU_SHOW, { isInput, selection });
 });

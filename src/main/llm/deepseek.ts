@@ -3,6 +3,7 @@ import { config } from "../config/env";
 import { availableTools, ToolCall, ToolResult } from "./tools";
 import { SYSTEM_PROMPT } from "./system-prompt";
 import { log } from "../utils/logger";
+import { cleanTextForTTS } from "../utils/textClean";
 
 const SILENT_ACTION_TOOLS = new Set([
   "open_application",
@@ -112,40 +113,6 @@ export interface ChatMessage {
 export interface DualChannel {
   speech: string;
   display: string;
-}
-
-/**
- * 统一的 TTS 文本清洗函数。
- * 去除 Markdown 符号、emoji、特殊字符，替换为 TTS 可朗读的形式。
- * 所有进入 TTS 的文本必须经过此函数清洗。
- */
-export function cleanTextForTTS(text: string): string {
-  return text
-    .replace(/<display>[\s\S]*?<\/display>/gi, "")
-    .replace(/<\/?display>/gi, "")
-    .replace(/<\/?speech>/gi, "")
-    .replace(/\{"display"\s*:\s*"?/g, "")
-    .replace(/"speech"\s*:\s*"?/g, "")
-    .replace(/"\s*\}/g, "")
-    .replace(/\\n/g, " ")
-    .replace(/\\["\\/]/g, "")
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1")
-    .replace(/_{1,3}([^_]+)_{1,3}/g, "$1")
-    .replace(/^#{1,6}\s*/gm, "")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "")
-    .replace(/^[-*+]\s+/gm, "")
-    .replace(/^\d+\.\s+/gm, "")
-    .replace(/^\s*>\s?/gm, "")
-    .replace(/[*#_|]/g, "") // Keep ~
-    .replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{2B50}\u{2B55}\u{2702}\u{2705}\u{2708}-\u{270F}\u{2764}\u{2763}\u{00A9}\u{00AE}\u{2122}\u{200D}\u{FE0F}]/gu, "")
-    .replace(/℃/g, "度")
-    .replace(/°C/g, "度")
-    .replace(/°/g, "度")
-    .replace(/\s{2,}/g, " ")
-    .trim();
 }
 
 /**
@@ -293,6 +260,8 @@ export class DeepSeekClient extends EventEmitter {
 
           if (delta.content) {
             assistantContent += delta.content;
+            // 边流边播：实时吐出原文增量，由主进程按句号切句合成语音
+            this.emit("stream", delta.content);
           }
 
           if (delta.reasoning_content) {

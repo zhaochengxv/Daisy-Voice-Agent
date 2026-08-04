@@ -3,6 +3,8 @@ export const IPC_CHANNELS = {
   AUDIO_DATA: "audio:data",
   AUDIO_ERROR: "audio:error",
   AUDIO_WAKE_WORD_ENABLED: "audio:wake-word-enabled",
+  AUDIO_READY: "audio:ready",
+  AUDIO_STOPPED: "audio:stopped",
 
   // Main -> renderer
   ASR_PARTIAL: "asr:partial",
@@ -45,6 +47,13 @@ export const IPC_CHANNELS = {
   // Auto launch
   AUTOLAUNCH_GET: "autolaunch:get",
   AUTOLAUNCH_SET: "autolaunch:set",
+
+  // Float window interaction
+  SET_IGNORE_MOUSE: "window:set-ignore-mouse",
+  SET_DOCKED: "set-docked",
+
+  // Native context menu
+  CONTEXT_MENU_SHOW: "context-menu:show",
 
   // Conversation history
   HISTORY_GET: "history:get",

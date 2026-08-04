@@ -518,7 +518,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "download_media",
-      description: "使用 yt-dlp 免费下载网络上的视频或音频（支持YouTube、Bilibili、抖音等数千个网站）。文件会被自动保存到用户的下载（Downloads）文件夹中。",
+      description: "使用 yt-dlp 免费下载网络上的视频或音频（支持YouTube、Bilibili、抖音等数千个网站）。下载在后台异步进行，文件会自动保存到用户的下载（Downloads）文件夹中。",
       parameters: {
         type: "object",
         properties: {
@@ -734,6 +734,31 @@ export const availableTools: ToolDefinition[] = [
           },
         },
         required: ["source", "format"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "extract_audio",
+      description: "从视频或音频文件中提取音频轨道（默认 mp3，支持 mp3/m4a/wav/flac/ogg），速度远快于完整转码。",
+      parameters: {
+        type: "object",
+        properties: {
+          source: {
+            type: "string",
+            description: "源视频或音频文件路径",
+          },
+          format: {
+            type: "string",
+            description: "目标音频格式，如 mp3、m4a、wav、flac、ogg（默认 mp3）",
+          },
+          output: {
+            type: "string",
+            description: "输出文件名（不含路径，默认保存到桌面）",
+          },
+        },
+        required: ["source"],
       },
     },
   },

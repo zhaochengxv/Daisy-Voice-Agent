@@ -4,22 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { log, logError } from "../utils/logger";
 import { getBundledBin } from "../config/env";
+import { runAppleScript } from "../utils/appleScript";
+import { switchAudioOutput as sharedSwitchAudioOutput } from "../utils/audioSwitch";
 
 const execAsync = promisify(exec);
-
-function runAppleScript(script: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = execFile("osascript", [], (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(stderr || err.message));
-      } else {
-        resolve(stdout);
-      }
-    });
-    child.stdin?.write(script);
-    child.stdin?.end();
-  });
-}
+const execFileAsync = promisify(execFile);
 
 export interface AppEntry {
   name: string;       // display name without .app
@@ -369,6 +358,11 @@ function escapeSiteAliasForRegex(alias: string): string {
     .replace(/\s+/g, "\\s*");
 }
 
+/** AppleScript 字符串字面量安全转义：包在双引号内，转义反斜杠与引号 */
+function appleScriptEscaped(text: string): string {
+  return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 // Match the complete site alias before the "搜索" verb. This matters for
 // providers such as "微信搜一搜", whose name itself contains the character “搜”.
 const SITE_SEARCH_ALIAS_PATTERN = SITE_SEARCH_PROVIDERS
@@ -466,7 +460,7 @@ async function openApp(name: string): Promise<CommandResult> {
     try {
       const { getDefaultBrowserBundleId } = require("../control/macos");
       const bundleId = await getDefaultBrowserBundleId();
-      await execAsync(`open -b "${bundleId}"`);
+      await execFileAsync("open", ["-b", bundleId]);
       log(`CommandRouter: opened default browser (${bundleId})`);
       return { handled: true, action: `open:browser` };
     } catch (e) {
@@ -480,7 +474,8 @@ async function openApp(name: string): Promise<CommandResult> {
     return { handled: false };
   }
   try {
-    await execAsync(`open -a "${app.path}"`);
+    // 用 execFile 数组参数打开，避免应用路径中的引号/特殊字符造成 shell 注入
+    await execFileAsync("open", ["-a", app.path]);
     log(`CommandRouter: opened ${app.name} (${app.path})`);
     return { handled: true, action: `open:${app.name}` };
   } catch {
@@ -498,11 +493,11 @@ async function quitAllBrowsers(): Promise<CommandResult> {
   for (const browserName of BROWSER_APP_NAMES) {
     try {
       // Check if the app is running before trying to quit
-      const { stdout } = await execAsync(
-        `osascript -e 'tell application "System Events" to (name of every process) contains "${browserName}"'`
+      const stdout = await runAppleScript(
+        `tell application "System Events" to (name of every process) contains "${browserName}"`
       );
       if (stdout.trim() === "true") {
-        await execAsync(`osascript -e 'tell application "${browserName}" to quit'`);
+        await runAppleScript(`tell application "${browserName}" to quit`);
         quitCount++;
         log(`CommandRouter: quit browser ${browserName}`);
       }
@@ -532,7 +527,7 @@ async function quitApp(name: string): Promise<CommandResult> {
 
   // Step 1: Try AppleScript quit (graceful)
   try {
-    await execAsync(`osascript -e 'tell application "${app.name}" to quit'`, { timeout: 3000 });
+    await runAppleScript(`tell application "${appleScriptEscaped(app.name)}" to quit`);
   } catch {
     // AppleScript failed — will try kill below
   }
@@ -540,7 +535,7 @@ async function quitApp(name: string): Promise<CommandResult> {
   // Step 2: Wait briefly, check if process still running
   await new Promise(r => setTimeout(r, 300));
   try {
-    const { stdout: stillRunning } = await execAsync(`pgrep -x "${bundleName}" 2>/dev/null || true`, { timeout: 2000 });
+    const { stdout: stillRunning } = await execFileAsync("pgrep", ["-x", bundleName], { timeout: 2000 });
     if (!stillRunning.trim()) {
       log(`CommandRouter: quit ${app.name} (AppleScript)`);
       return { handled: true, action: `quit:${app.name}` };
@@ -553,7 +548,7 @@ async function quitApp(name: string): Promise<CommandResult> {
 
   // Step 3: Process still running — force kill
   try {
-    await execAsync(`pkill -x "${bundleName}"`, { timeout: 3000 });
+    await execFileAsync("pkill", ["-x", bundleName], { timeout: 3000 });
     log(`CommandRouter: quit ${app.name} (kill - fallback)`);
     return { handled: true, action: `quit:${app.name}` };
   } catch {
@@ -565,13 +560,13 @@ async function quitApp(name: string): Promise<CommandResult> {
 async function setVolume(direction: "up" | "down" | "mute"): Promise<CommandResult> {
   try {
     if (direction === "mute") {
-      await execAsync(`osascript -e 'set volume with output muted'`);
+      await runAppleScript("set volume with output muted");
     } else {
       // Get current volume
-      const { stdout } = await execAsync(`osascript -e 'output volume of (get volume settings)'`);
+      const stdout = await runAppleScript("output volume of (get volume settings)");
       let vol = parseInt(stdout.trim(), 10);
       vol = direction === "up" ? Math.min(100, vol + 10) : Math.max(0, vol - 10);
-      await execAsync(`osascript -e 'set volume ${vol}'`);
+      await runAppleScript(`set volume ${vol}`);
     }
     log(`CommandRouter: volume ${direction}`);
     return { handled: true, action: `volume:${direction}` };
@@ -582,12 +577,14 @@ async function setVolume(direction: "up" | "down" | "mute"): Promise<CommandResu
 
 async function controlPlayback(action: "playpause" | "next" | "prev"): Promise<CommandResult> {
   try {
-    const keyMap: Record<string, string> = {
-      playpause: "space",
-      next: "fast forward",
-      prev: "rewind",
+    const keyMap: Record<string, number> = {
+      playpause: 49,
+      next: 123,
+      prev: 124,
     };
-    await execAsync(`osascript -e 'tell application "System Events" to key code ${action === "playpause" ? "49" : action === "next" ? "123" : "124"}'`);
+    await runAppleScript(
+      `tell application "System Events" to key code ${keyMap[action]}`
+    );
     log(`CommandRouter: playback ${action}`);
     return { handled: true, action: `playback:${action}` };
   } catch {
@@ -643,13 +640,13 @@ end tell
 async function minimizeAllWindowsExcept(exceptName: string): Promise<CommandResult> {
   const app = matchApp(exceptName);
   const keepAppName = app ? app.name : exceptName;
-  
+
   const script = `
 tell application "System Events"
     set allProcesses to application processes whose visible is true
     repeat with p in allProcesses
         set pName to name of p
-        if pName is not in {"${keepAppName}", "Daisy", "Finder"} then
+        if pName is not in {"${appleScriptEscaped(keepAppName)}", "Daisy", "Finder"} then
             try
                 set value of attribute "AXMinimized" of every window of p to true
             end try
@@ -670,11 +667,11 @@ end tell
 async function minimizeApp(appName: string): Promise<CommandResult> {
   const app = matchApp(appName);
   const targetName = app ? app.name : appName;
-  
+
   const script = `
 tell application "System Events"
     repeat with p in (application processes whose visible is true)
-        if name of p is "${targetName}" then
+        if name of p is "${appleScriptEscaped(targetName)}" then
             try
                 set value of attribute "AXMinimized" of every window of p to true
             end try
@@ -710,20 +707,20 @@ end tell
 
 tell application "System Events"
     -- Left app
-    if exists process "${leftApp.name}" then
-        set frontmost of process "${leftApp.name}" to true
+    if exists process "${appleScriptEscaped(leftApp.name)}" then
+        set frontmost of process "${appleScriptEscaped(leftApp.name)}" to true
         try
-            set value of attribute "AXPosition" of window 1 of process "${leftApp.name}" to {0, 23}
-            set value of attribute "AXSize" of window 1 of process "${leftApp.name}" to {(screenWidth / 2), (screenHeight - 23)}
+            set value of attribute "AXPosition" of window 1 of process "${appleScriptEscaped(leftApp.name)}" to {0, 23}
+            set value of attribute "AXSize" of window 1 of process "${appleScriptEscaped(leftApp.name)}" to {(screenWidth / 2), (screenHeight - 23)}
         end try
     end if
-    
+
     -- Right app
-    if exists process "${rightApp.name}" then
-        set frontmost of process "${rightApp.name}" to true
+    if exists process "${appleScriptEscaped(rightApp.name)}" then
+        set frontmost of process "${appleScriptEscaped(rightApp.name)}" to true
         try
-            set value of attribute "AXPosition" of window 1 of process "${rightApp.name}" to {(screenWidth / 2), 23}
-            set value of attribute "AXSize" of window 1 of process "${rightApp.name}" to {(screenWidth / 2), (screenHeight - 23)}
+            set value of attribute "AXPosition" of window 1 of process "${appleScriptEscaped(rightApp.name)}" to {(screenWidth / 2), 23}
+            set value of attribute "AXSize" of window 1 of process "${appleScriptEscaped(rightApp.name)}" to {(screenWidth / 2), (screenHeight - 23)}
         end try
     end if
 end tell
@@ -790,62 +787,11 @@ export function isSaveClipboardImageToDesktopCommand(text: string): boolean {
 }
 
 async function switchAudioOutput(target: string): Promise<CommandResult> {
-  try {
-    const SW = getBundledBin("SwitchAudioSource");
-    const { stdout } = await execAsync(`"${SW}" -a -t output`);
-    const lines = stdout.split("\n").map(l => l.trim()).filter(Boolean);
-    // The active device has (*) appended; strip it for matching
-    const devices = lines.map((l) => l.replace(/\s*\(.*\)\s*$/, "").trim());
-    log(`switchAudioOutput: available devices: ${devices.join(", ")}`);
-
-    // Normalize helper: strip spaces for comparison ("SSL2" ↔ "SSL 2")
-    const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, "");
-    const targetLower = target.toLowerCase();
-    const targetNorm = normalize(target);
-
-    // 1. Exact match (case-insensitive)
-    let best = devices.find((d) => d.toLowerCase() === targetLower);
-
-    // 2. Normalized match (ignoring spaces)
-    if (!best) {
-      best = devices.find((d) => normalize(d) === targetNorm);
-    }
-
-    // 3. Fuzzy includes match
-    if (!best) {
-      best = devices.find((d) => d.toLowerCase().includes(targetLower) || targetLower.includes(d.toLowerCase()));
-    }
-
-    // 4. Normalized includes match
-    if (!best) {
-      best = devices.find((d) => normalize(d).includes(targetNorm) || targetNorm.includes(normalize(d)));
-    }
-
-    // 5. "声卡"/"音频接口" → try to find a pro audio interface device
-    if (!best && /声卡|音频接口|audio\s*interface/i.test(target)) {
-      best = devices.find((d) => /SSL|audio|interface|usb|thunderbolt|firewire|rme|focusrite|apollo|motu|ua[ -]|volt/i.test(d));
-    }
-
-    // 6. Last resort: substring scoring
-    if (!best) {
-      const scored = devices
-        .map((d) => ({ name: d, score: d.toLowerCase().includes(targetLower) ? d.length : 999 }))
-        .sort((a, b) => a.score - b.score);
-      if (scored[0] && scored[0].score < 999) best = scored[0].name;
-    }
-
-    if (!best) {
-      log(`switchAudioOutput: no device matching "${target}"`);
-      return { handled: false };
-    }
-
-    await execAsync(`"${SW}" -t output -s "${best}"`);
-    log(`switchAudioOutput: switched to "${best}"`);
-    return { handled: true, action: `audio:切换至 ${best}` };
-  } catch (err) {
-    logError("switchAudioOutput failed", err);
+  const result = await sharedSwitchAudioOutput(target);
+  if (!result.device) {
     return { handled: false };
   }
+  return { handled: true, action: `audio:切换至 ${result.device}` };
 }
 
 // Parse user command and execute if it matches a local command pattern

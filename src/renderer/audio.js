@@ -183,6 +183,12 @@ async function ensureMic() {
         logToMain("ensureMic: resumed suspended AudioContext");
       }
 
+      // releaseMic 可能在 resume() 挂起期间执行并将 audioContext 置空，
+      // 此时放弃本次初始化，避免残留空转 interval。
+      if (audioContext !== newContext) {
+        return false;
+      }
+
       if (resumeInterval) clearInterval(resumeInterval);
       resumeInterval = setInterval(() => {
         if (audioContext && audioContext.state === "suspended") {

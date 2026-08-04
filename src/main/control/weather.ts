@@ -35,8 +35,12 @@ export async function weatherForecast(city: string, _days = 3): Promise<string> 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
 
-    const response = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
+    let response: Response;
+    try {
+      response = await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);

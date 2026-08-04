@@ -84,7 +84,13 @@ export class WhisperAsrSession extends EventEmitter {
         log("WhisperAsrSession: silence or max length reached, transcribing...");
         this.sessionActive = false;
         this.preRollBuffer = [];
-        this.processAudio();
+        if (this.totalBytes >= MIN_AUDIO_BYTES) {
+          this.processAudio();
+        } else {
+          // 音频过短，重置缓冲避免误触发转写
+          this.audioBuffer = [];
+          this.totalBytes = 0;
+        }
       }
     }
   }
