@@ -135,19 +135,76 @@ Write-Output "DONE"`;
   return "已成功关闭所有其他应用程序";
 }
 
+/**
+ * 输入任意文本（含中文/Unicode）。
+ *
+ * SendKeys 只能输入 ASCII（走键盘扫描码），中文会被静默丢弃。
+ * 方案：备份剪贴板 → 写入目标文本 → Ctrl+V 粘贴 → 还原剪贴板。
+ */
 export async function typeText(text: string): Promise<string> {
   try {
     const script = `
 Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.SendKeys]::SendWait($env:DAISY_ARG0)`;
-    await runPowerShell(script, { args: [escapeSendKeys(text)] });
+$orig = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+Set-Clipboard -Value $env:DAISY_ARG0 -ErrorAction SilentlyContinue
+[System.Windows.Forms.SendKeys]::SendWait('^v')
+Start-Sleep -Milliseconds 300
+if ($orig -ne $null -and $orig -ne "") {
+    Set-Clipboard -Value $orig -ErrorAction SilentlyContinue
+}
+Write-Output "OK"`;
+    await runPowerShell(script, { args: [text] });
     return "已输入文字";
   } catch {
     return "输入文字失败，请确认当前焦点在可输入区域";
   }
 }
 
-/** 将快捷键描述（如 "ctrl+shift+a"）映射为 SendKeys 序列（如 "^+a"），纯函数便于单测 */
+/** 主键 → 虚拟键码(VK)。字母/数字用大写 ASCII（与 VK 一致），功能键走映射表。无法映射返回 null。 */
+export function keyToVk(mainKey: string): number | null {
+  const lower = mainKey.toLowerCase();
+  const vkMap: Record<string, number> = {
+    enter: 0x0D, return: 0x0D,
+    escape: 0x1B, esc: 0x1B,
+    tab: 0x09,
+    backspace: 0x08,
+    delete: 0x2E,
+    up: 0x26, down: 0x28, left: 0x25, right: 0x27,
+    home: 0x24, end: 0x23,
+    pageup: 0x21, pagedown: 0x22,
+    space: 0x20,
+    insert: 0x2D,
+  };
+  if (vkMap[lower] !== undefined) return vkMap[lower];
+  if (/^[a-z0-9]$/.test(lower)) return lower.toUpperCase().charCodeAt(0);
+  return null;
+}
+
+/**
+ * 拆分快捷键（如 "ctrl+win+d"）为修饰键 + 主键，纯函数便于单测。
+ * 返回 null 表示无法解析。
+ */
+export function parseHotkey(keys: string): { win: boolean; ctrl: boolean; alt: boolean; shift: boolean; mainKey: string } | null {
+  const normalized = keys.toLowerCase().replace(/\s+/g, "");
+  const parts = normalized.split("+").filter(Boolean);
+  if (parts.length === 0) return null;
+  const mainKey = parts[parts.length - 1];
+  const modifiers = parts.slice(0, -1);
+  const hk = { win: false, ctrl: false, alt: false, shift: false, mainKey };
+  for (const m of modifiers) {
+    if (m === "win" || m === "command" || m === "cmd" || m === "meta") hk.win = true;
+    else if (m === "ctrl" || m === "control") hk.ctrl = true;
+    else if (m === "alt" || m === "option") hk.alt = true;
+    else if (m === "shift") hk.shift = true;
+    else return null; // 未知修饰词 → 无法解析
+  }
+  return hk;
+}
+
+/**
+ * 将快捷键描述（如 "ctrl+shift+a"）映射为 SendKeys 序列（如 "^+a"）。
+ * 注意：SendKeys 无法表达 Win 键，win/cmd 会退化为 Alt（仅 fallback 路径使用）。
+ */
 export function buildSendKeys(keys: string): string {
   const normalized = keys.toLowerCase().replace(/\s+/g, "");
   const parts = normalized.split("+");
@@ -170,12 +227,60 @@ export function buildSendKeys(keys: string): string {
   return prefix + keyPart;
 }
 
+/**
+ * 发送快捷键。
+ *
+ * SendKeys 无法表达 Win 键（% 是 Alt），且对任意键组合不可靠；
+ * 优先用 user32 keybd_event（VK 码）发送，支持 Win/Ctrl/Alt/Shift 任意组合；
+ * 主键无法映射 VK（如特殊符号）时退回 SendKeys（此时不能含 win 修饰，win 会退化为 Alt）。
+ */
 export async function pressKeys(keys: string): Promise<string> {
   try {
-    const script = `
+    const hk = parseHotkey(keys);
+    if (!hk) {
+      return `无法解析快捷键「${keys}」`;
+    }
+    const vk = keyToVk(hk.mainKey);
+
+    if (vk !== null) {
+      // keybd_event 方案：支持 Win 键
+      const script = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class WinHotkey {
+    [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+}
+"@
+$vk = [int]$env:DAISY_VK
+function Press-Mod([int]$code, [string]$on) {
+    if ($on -eq '1') { [WinHotkey]::keybd_event([byte]$code, 0, 0, [UIntPtr]::Zero) }
+}
+function Release-Mod([int]$code, [string]$on) {
+    if ($on -eq '1') { [WinHotkey]::keybd_event([byte]$code, 0, 2, [UIntPtr]::Zero) }
+}
+Press-Mod 0x5B $env:DAISY_WIN
+Press-Mod 0x11 $env:DAISY_CTRL
+Press-Mod 0x12 $env:DAISY_ALT
+Press-Mod 0x10 $env:DAISY_SHIFT
+[WinHotkey]::keybd_event([byte]$vk, 0, 0, [UIntPtr]::Zero)
+[WinHotkey]::keybd_event([byte]$vk, 0, 2, [UIntPtr]::Zero)
+Release-Mod 0x5B $env:DAISY_WIN
+Release-Mod 0x11 $env:DAISY_CTRL
+Release-Mod 0x12 $env:DAISY_ALT
+Release-Mod 0x10 $env:DAISY_SHIFT
+Write-Output "OK"`;
+      await runPowerShell(script, {
+        args: [String(vk), hk.win ? "1" : "0", hk.ctrl ? "1" : "0", hk.alt ? "1" : "0", hk.shift ? "1" : "0"],
+      });
+      return `已发送快捷键 ${keys}`;
+    }
+
+    // 退回 SendKeys：不能含 win（% 是 Alt 语义错误），仅 ctrl/alt/shift
+    const sendkeysScript = `
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.SendKeys]::SendWait($env:DAISY_ARG0)`;
-    await runPowerShell(script, { args: [buildSendKeys(keys)] });
+    await runPowerShell(sendkeysScript, { args: [buildSendKeys(keys)] });
     return `已发送快捷键 ${keys}`;
   } catch {
     return "发送快捷键失败";

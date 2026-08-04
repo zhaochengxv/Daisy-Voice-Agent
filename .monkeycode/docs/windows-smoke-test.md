@@ -51,6 +51,8 @@
 | read_file / write_file / create_file / delete_file / list_directory | fs 模块，应正常 | ☐ |
 | run_shell_command | PowerShell 执行，危险命令拦截生效 | ☐ |
 | type_text / press_keys | SendKeys 输入与快捷键 | ☐ |
+| type_text 输入中文/Unicode | 剪贴板+Ctrl+V 方案，中文正常输入且剪贴板还原 | ☐ |
+| press_keys 含 Win 键（win+d） | user32 keybd_event 正确发 Win 组合（非 Alt） | ☐ |
 | get_frontmost_application | user32 GetForegroundWindow | ☐ |
 | read_selected_text | 剪贴板备份 + ^c 读取还原 | ☐ |
 | set_timer / set_alarm | 派生独立 powershell + console.beep | ☐ |

@@ -33,9 +33,11 @@ export async function runPowerShell(script: string, options: PowerShellOptions =
     env[`DAISY_ARG${i}`] = value;
   });
   try {
+    // -STA：剪贴板 Get/Set-Clipboard 需要单线程 Apartment（powershell.exe 默认 MTA）
     const { stdout } = await execFileAsync("powershell.exe", [
       "-NoProfile",
       "-NonInteractive",
+      "-STA",
       "-ExecutionPolicy", "Bypass",
       "-Command",
       script,
