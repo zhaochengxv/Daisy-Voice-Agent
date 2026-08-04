@@ -1,6 +1,17 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
+
+vi.mock("../src/main/utils/windowsShell", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/main/utils/windowsShell")>();
+  return {
+    ...actual,
+    runPowerShell: vi.fn(async () => {
+      throw new Error("powershell unavailable in test env");
+    }),
+  };
+});
+
 import {
   escapeSendKeys,
   buildSendKeys,
@@ -9,7 +20,11 @@ import {
   progIdToBrowserName,
   getWindowsDesktopPath,
 } from "../src/main/control/windows";
-import { isWindows } from "../src/main/utils/windowsShell";
+import { isWindows, runPowerShell } from "../src/main/utils/windowsShell";
+
+beforeEach(() => {
+  vi.mocked(runPowerShell).mockClear();
+});
 
 describe("escapeSendKeys", () => {
   it("普通文本不受影响", () => {
@@ -138,7 +153,7 @@ describe("parseHotkey", () => {
 });
 
 describe("getWindowsDesktopPath", () => {
-  it("非 Windows 环境回退到 ~/Desktop", async () => {
+  it("runPowerShell 失败时回退到 ~/Desktop（不依赖真实平台）", async () => {
     const result = await getWindowsDesktopPath();
     expect(result).toBe(path.join(os.homedir(), "Desktop"));
   });
