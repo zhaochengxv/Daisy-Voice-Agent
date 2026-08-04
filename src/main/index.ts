@@ -10,6 +10,7 @@ import { config, isAsrConfigured, isLlmConfigured, getWhisperModelPath, getBundl
 import { IPC_CHANNELS } from "./ipc/channels";
 import { createFloatWindow, getFloatWindow, sendToFloatWindow, showFloatWindow, hideFloatWindow } from "./windows/floatWindow";
 import { createSettingsWindow, getSettingsWindow } from "./windows/settingsWindow";
+import { createTray, destroyTray } from "./windows/tray";
 import { initAudioRecorder, startRecording, stopRecording, getIsRecording, setWakeWordCaptureEnabled } from "./audio/recorder";
 import { AsrSession } from "./asr";
 import { WhisperAsrSession } from "./asr/whisper";
@@ -75,6 +76,31 @@ let isScreenLocked = false;
 const volumeGuard = new VolumeGuard();
 const ttsPipeline = new TtsPipeline();
 
+// 崩溃兜底：未捕获异常/拒绝一律落盘，避免静默崩溃无法诊断
+process.on("uncaughtException", (error) => {
+  logError("UNCAUGHT EXCEPTION", error);
+});
+process.on("unhandledRejection", (reason) => {
+  logError("UNHANDLED REJECTION", reason);
+});
+
+// 单实例锁：二次启动时唤起已有实例的设置窗，杜绝「双击无反应」
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const win = getSettingsWindow();
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    } else {
+      createSettingsWindow();
+    }
+  });
+}
+
 app.whenReady().then(() => {
   log("App ready");
   // Show dock icon on macOS
@@ -106,6 +132,7 @@ app.on("before-quit", () => {
   globalShortcut?.destroy();
   asrSession?.stop();
   wakeWordMonitor?.stop();
+  destroyTray();
   // Clean up TTS temp files
   const ttsDir = path.join(require("os").tmpdir(), "diri-tts");
   try {
@@ -126,8 +153,17 @@ app.on("before-quit", () => {
 function initialize(): void {
   log("Initializing...");
   log(`ASR configured: ${isAsrConfigured()}, LLM configured: ${isLlmConfigured()}, shortcutUseWhisper: ${config.whisper.shortcutUseWhisper}`);
+
+  // Windows 无 dock 图标，托盘是唯一常驻入口；macOS 有 dock 不强制
+  if (isWindows()) {
+    createTray();
+  }
+
+  // 首次启动（未配置 ASR 与 LLM）直接显示设置窗引导配置；
+  // 否则隐藏预创建，用户触发时零延迟
+  const firstRun = !isAsrConfigured() && !isLlmConfigured();
+  createSettingsWindow(firstRun);
   createFloatWindow();
-  createSettingsWindow(true); // 启动时隐藏预创建，用户打开时零延迟
 
   setupIpc();
   setupAudio();
