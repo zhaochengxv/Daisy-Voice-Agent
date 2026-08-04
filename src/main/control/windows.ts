@@ -513,13 +513,16 @@ Write-Output "OK"`;
 
 async function readEmails(kind: "unread" | "recent" | "search", query: string, limit: number): Promise<string> {
   const filterClause = kind === "unread"
-    ? `$outline = "FROM:" + $m.SenderName + "|SUBJECT:" + $m.Subject
-    if ($m.UnRead) { $results += $outline }`
+    ? `$sender = if ($m.SenderName) { $m.SenderName } else { "(未知)" }
+    $subject = if ($m.Subject) { $m.Subject } else { "(无主题)" }
+    if ($m.UnRead) { $results += ("FROM:" + $sender + "|SUBJECT:" + $subject) }`
     : kind === "search"
-      ? `$outline = "FROM:" + $m.SenderName + "|SUBJECT:" + $m.Subject
-    if ($m.Subject -and $m.Subject.Contains($env:DAISY_ARG2)) { $results += $outline }`
-      : `$outline = "FROM:" + $m.SenderName + "|SUBJECT:" + $m.Subject
-    $results += $outline`;
+      ? `$sender = if ($m.SenderName) { $m.SenderName } else { "(未知)" }
+    $subject = if ($m.Subject) { $m.Subject } else { "" }
+    if ($subject -and $subject.Contains($env:DAISY_ARG2)) { $results += ("FROM:" + $sender + "|SUBJECT:" + $subject) }`
+      : `$sender = if ($m.SenderName) { $m.SenderName } else { "(未知)" }
+    $subject = if ($m.Subject) { $m.Subject } else { "(无主题)" }
+    $results += ("FROM:" + $sender + "|SUBJECT:" + $subject)`;
   try {
     const script = `
 try {
@@ -694,12 +697,12 @@ try {
   }
 }
 
-/** Windows 查看日历事件：Outlook COM 日历文件夹按时间范围列出 */
+/** Windows 查看日历事件：Outlook COM 日历文件夹，[datetime] 强类型比较（绕开 Restrict 日期格式区域差异） */
 export async function getCalendarEvents(days: number = 7): Promise<string> {
   try {
     const now = new Date();
     const end = new Date(now.getTime() + Math.max(1, days) * 24 * 60 * 60 * 1000);
-    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const iso = (d: Date) => d.toISOString();
     const script = `
 try {
   $outlook = New-Object -ComObject Outlook.Application
@@ -708,21 +711,21 @@ try {
   $items = $cal.Items
   $items.IncludeRecurrences = $true
   $items.Sort("[Start]", $true)
-  $filter = "[Start] >= '${fmt(now)}' AND [Start] <= '${fmt(end)}'"
-  $filtered = $items.Restrict($filter)
+  $from = [datetime]::Parse($env:DAISY_ARG0)
+  $to = [datetime]::Parse($env:DAISY_ARG1)
   $results = @()
-  $limit = 0
-  foreach ($evt in $filtered) {
-    if ($limit -ge 20) { break }
-    $limit++
+  foreach ($evt in $items) {
+    if ($results.Count -ge 20) { break }
     try {
-      $results += ("EVT:" + $evt.Subject + "|" + $evt.Start.ToString("MM-dd HH:mm") + "|" + $evt.Location)
+      if ($evt.Start -ge $from -and $evt.Start -le $to) {
+        $results += ("EVT:" + $evt.Subject + "|" + $evt.Start.ToString("MM-dd HH:mm") + "|" + $evt.Location)
+      }
     } catch { }
   }
   if ($results.Count -eq 0) { Write-Output "NONE" }
   else { $results | ForEach-Object { Write-Output $_ } }
 } catch { Write-Output "NO_OUTLOOK" }`;
-    const result = await runPowerShell(script, { timeoutMs: 60000 });
+    const result = await runPowerShell(script, { args: [iso(now), iso(end)], timeoutMs: 60000 });
     if (result.includes("NO_OUTLOOK")) return OFFICE_NOT_FOUND;
     if (result.trim() === "NONE" || !result.trim()) return `未来 ${days} 天内没有日历事件`;
     return result.trim().split("\n").map((line) => {
