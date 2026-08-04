@@ -16,7 +16,7 @@
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:win": "npm run build && electron-builder --win",
     "test": "vitest run",
-    "clean": "rm -rf dist releases"
+    "clean": "node scripts/clean.js"
   },
   "devDependencies": {
     "@netlify/functions": "^4.2.5",
