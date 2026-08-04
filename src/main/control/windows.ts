@@ -519,7 +519,9 @@ async function readEmails(kind: "unread" | "recent" | "search", query: string, l
     : kind === "search"
       ? `$sender = if ($m.SenderName) { $m.SenderName } else { "(未知)" }
     $subject = if ($m.Subject) { $m.Subject } else { "" }
-    if ($subject -and $subject.Contains($env:DAISY_ARG2)) { $results += ("FROM:" + $sender + "|SUBJECT:" + $subject) }`
+    $body = if ($m.Body) { $m.Body } else { "" }
+    $q = $env:DAISY_ARG2.ToLower()
+    if (($subject -and $subject.ToLower().Contains($q)) -or ($sender -and $sender.ToLower().Contains($q)) -or ($body -and $body.ToLower().Contains($q))) { $results += ("FROM:" + $sender + "|SUBJECT:" + $subject) }`
       : `$sender = if ($m.SenderName) { $m.SenderName } else { "(未知)" }
     $subject = if ($m.Subject) { $m.Subject } else { "(无主题)" }
     $results += ("FROM:" + $sender + "|SUBJECT:" + $subject)`;
@@ -575,7 +577,7 @@ export async function getRecentEmails(limit: number = 5): Promise<string> {
 export async function searchEmails(query: string, limit: number = 5): Promise<string> {
   const result = await readEmails("search", query, limit);
   if (result === OFFICE_NOT_FOUND) return result;
-  if (result === "NONE") return `没有找到主题包含「${query}」的邮件`;
+  if (result === "NONE") return `没有找到主题、发件人或正文包含「${query}」的邮件`;
   return result;
 }
 
