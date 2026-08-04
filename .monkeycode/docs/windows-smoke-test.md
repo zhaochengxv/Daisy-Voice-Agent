@@ -16,6 +16,7 @@
 | LLM 工具描述 | 邮件/备忘录/日历/文档/PDF 编辑等工具描述带「当前仅支持 macOS」标注，LLM 不误用 | ☐ |
 | 系统提示词 | 排除进程列表显示 explorer 而非 Finder，无 AppleScript 指引 | ☐ |
 | TTS 音频播放 | `file:///C:/...` URL 正确加载 MP3（Windows 反斜杠路径已转换） | ☐ |
+| 无黑色控制台窗口 | 每次命令（开关应用/音量/剪贴板/计时器等）执行时不弹出 cmd/PowerShell 黑窗（windowsHide 已全局处理） | ☐ |
 
 ## 核心循环（优先级高）
 

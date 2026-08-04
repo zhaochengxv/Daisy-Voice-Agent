@@ -41,7 +41,7 @@ export async function runPowerShell(script: string, options: PowerShellOptions =
       "-ExecutionPolicy", "Bypass",
       "-Command",
       script,
-    ], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env });
+    ], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env, windowsHide: true });
     return stdout.trim();
   } catch (error) {
     logError("runPowerShell failed", error);

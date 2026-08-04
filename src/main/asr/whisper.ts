@@ -122,6 +122,7 @@ export class WhisperAsrSession extends EventEmitter {
         env: getWhisperExecutionEnv(WHISPER_CLI),
         timeout: 15000,
         maxBuffer: 1024 * 1024,
+        windowsHide: true,
       });
 
       const text = stdout.trim().replace(/\[.*?\]/g, "").trim();

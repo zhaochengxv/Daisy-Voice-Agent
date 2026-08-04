@@ -47,7 +47,7 @@ const CONVERSATION_EXPIRE_MS = 5 * 60 * 1000; // 5 minutes
 function playSound(name: string): void {
   if (isWindows()) {
     // Windows 用 PowerShell 播放系统提示音
-    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[console]::beep(880, 180)"], () => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[console]::beep(880, 180)"], { windowsHide: true }, () => {
       // ignore — 系统提示音播放失败不影响主流程
     });
     return;
@@ -1417,7 +1417,7 @@ function setupIpc(): void {
     if (!cliInstalled) {
       try {
         if (isWindows()) {
-          await execFileAsync("where", ["whisper-cli"]);
+          await execFileAsync("where", ["whisper-cli"], { windowsHide: true });
         } else {
           await execFileAsync("which", ["whisper-cli"]);
         }

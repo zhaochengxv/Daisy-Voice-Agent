@@ -171,6 +171,7 @@ export class WakeWordMonitor extends EventEmitter {
         env: getWhisperExecutionEnv(WHISPER_CLI),
         timeout: 10000,
         maxBuffer: 1024 * 1024,
+        windowsHide: true,
       });
 
       // whisper-cli outputs transcript to stdout, clean it up

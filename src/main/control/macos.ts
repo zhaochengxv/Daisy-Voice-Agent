@@ -614,6 +614,7 @@ export async function downloadMedia(url: string, type: string = "video", destina
     const child = spawn(ytdlpBin, args, {
       detached: true,
       stdio: "ignore",
+      windowsHide: true,
     });
     child.unref();
     activeDownloads.add(child);
@@ -1058,7 +1059,7 @@ export async function trimVideo(source: string, start: string, end: string, outp
       "-movflags", "+faststart", outPath,
     ];
     log(`trimVideo: ${ffmpeg} ${args.join(" ")}`);
-    await execFileAsync(ffmpeg, args, { timeout: 60000 });
+    await execFileAsync(ffmpeg, args, { timeout: 60000, windowsHide: true });
     return `已截取视频片段，保存至「${outName}」（${dur} 秒）`;
   } catch (error) {
     return `视频截取失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -1093,7 +1094,7 @@ export async function convertVideo(source: string, format: string, output?: stri
     args.push(outPath);
 
     log(`convertVideo: ${ffmpeg} ${args.join(" ")}`);
-    await execFileAsync(ffmpeg, args, { timeout: 300000 });
+    await execFileAsync(ffmpeg, args, { timeout: 300000, windowsHide: true });
     return `已转换视频格式，保存至「${outName}」`;
   } catch (error) {
     return `视频格式转换失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -1130,7 +1131,7 @@ export async function extractAudio(source: string, format: string = "mp3", outpu
     args.push(outPath);
 
     log(`extractAudio: ${ffmpeg} ${args.join(" ")}`);
-    await execFileAsync(ffmpeg, args, { timeout: 300000 });
+    await execFileAsync(ffmpeg, args, { timeout: 300000, windowsHide: true });
     return `已提取音频，保存至「${outName}」`;
   } catch (error) {
     return `音频提取失败: ${error instanceof Error ? error.message : String(error)}`;
