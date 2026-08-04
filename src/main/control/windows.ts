@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import path from "node:path";
+import os from "node:os";
 import { log } from "../utils/logger";
 import { runPowerShell } from "../utils/windowsShell";
 
@@ -43,6 +45,19 @@ export async function getDefaultBrowserProgId(): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/** 获取 Windows 真实桌面路径（兼容 OneDrive 已知文件夹重定向），失败回退 ~/Desktop */
+export async function getWindowsDesktopPath(): Promise<string> {
+  try {
+    const result = await runPowerShell(
+      `[Environment]::GetFolderPath('Desktop')`
+    );
+    if (result && result.trim()) return result.trim();
+  } catch {
+    // fall through
+  }
+  return path.join(os.homedir(), "Desktop");
 }
 
 export function progIdToBrowserName(progId: string): string {  const map: Record<string, string> = {

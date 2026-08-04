@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
+import os from "node:os";
+import path from "node:path";
 import {
   escapeSendKeys,
   buildSendKeys,
   keyToVk,
   parseHotkey,
   progIdToBrowserName,
+  getWindowsDesktopPath,
 } from "../src/main/control/windows";
 import { isWindows } from "../src/main/utils/windowsShell";
 
@@ -131,6 +134,13 @@ describe("parseHotkey", () => {
   it("空输入返回 null", () => {
     expect(parseHotkey("")).toBeNull();
     expect(parseHotkey("++")).toBeNull();
+  });
+});
+
+describe("getWindowsDesktopPath", () => {
+  it("非 Windows 环境回退到 ~/Desktop", async () => {
+    const result = await getWindowsDesktopPath();
+    expect(result).toBe(path.join(os.homedir(), "Desktop"));
   });
 });
 

@@ -846,8 +846,15 @@ async function saveClipboardImageToDesktop(): Promise<CommandResult> {
     const fs = require("node:fs");
     const os = require("node:os");
     const path = require("node:path");
-    
-    const desktopPath = path.join(os.homedir(), "Desktop");
+
+    let desktopPath = path.join(os.homedir(), "Desktop");
+    if (isWindows()) {
+      try {
+        desktopPath = await win.getWindowsDesktopPath();
+      } catch {
+        // fall back to ~/Desktop
+      }
+    }
     const now = new Date();
     const dateStr = now.getFullYear() + 
       String(now.getMonth() + 1).padStart(2, '0') + 
