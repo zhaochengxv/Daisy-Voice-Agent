@@ -78,6 +78,7 @@ export interface DiriAPI {
   // they do not enable any paid-only feature.
   onSetDocked: (callback: (docked: boolean) => void) => () => void;
   setIgnoreMouse: (ignore: boolean) => void;
+  floatDrag: (dx: number, dy: number) => void;
 }
 
 function createListener<T>(channel: string) {
@@ -148,6 +149,7 @@ const api: DiriAPI = {
   onWakeWordEnabled: createListener<boolean>(IPC_CHANNELS.AUDIO_WAKE_WORD_ENABLED),
   onSetDocked: createListener<boolean>(IPC_CHANNELS.SET_DOCKED),
   setIgnoreMouse: (ignore: boolean) => ipcRenderer.send(IPC_CHANNELS.SET_IGNORE_MOUSE, ignore),
+  floatDrag: (dx: number, dy: number) => ipcRenderer.send(IPC_CHANNELS.FLOAT_DRAG, dx, dy),
 };
 
 contextBridge.exposeInMainWorld("diriAPI", api);

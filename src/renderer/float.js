@@ -517,15 +517,49 @@ function drawGlassHighlights(cx, cy, radius, activeState, isDark) {
   ctx.stroke();
 }
 
-// ── 鼠标穿透智能判断 ──
+// ── 鼠标穿透智能判断（仅 macOS）──
+// Windows 悬浮球可交互（点击打开设置/拖动），若动态切换穿透会在鼠标移出
+// orb 后使窗口永久穿透、事件再无法接收，导致卡死。
 let isMouseOverInteractiveElement = false;
-window.addEventListener("mousemove", (e) => {
-  const isOverOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
-  if (isOverOrb !== isMouseOverInteractiveElement) {
-    isMouseOverInteractiveElement = isOverOrb;
-    diriAPI.setIgnoreMouse(!isMouseOverInteractiveElement);
-  }
-});
+if (diriAPI.platform === "darwin") {
+  window.addEventListener("mousemove", (e) => {
+    const isOverOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
+    if (isOverOrb !== isMouseOverInteractiveElement) {
+      isMouseOverInteractiveElement = isOverOrb;
+      diriAPI.setIgnoreMouse(!isMouseOverInteractiveElement);
+    }
+  });
+}
+
+// ── Windows 悬浮球拖动 ──
+// 无边框窗口无系统拖拽条，-webkit-app-region: drag 会拦截 click，故用
+// renderer 上报相对位移 + 主进程 setPosition 实现手动拖动。
+let isDragging = false;
+let dragMoved = false;
+let lastDragX = 0;
+let lastDragY = 0;
+if (diriAPI.platform !== "darwin") {
+  canvas.addEventListener("mousedown", (e) => {
+    isDragging = true;
+    dragMoved = false;
+    lastDragX = e.screenX;
+    lastDragY = e.screenY;
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+    const dx = e.screenX - lastDragX;
+    const dy = e.screenY - lastDragY;
+    if (dx !== 0 || dy !== 0) {
+      if (!dragMoved && (Math.abs(dx) + Math.abs(dy) > 4)) dragMoved = true;
+      lastDragX = e.screenX;
+      lastDragY = e.screenY;
+      diriAPI.floatDrag(dx, dy);
+    }
+  });
+  window.addEventListener("mouseup", () => {
+    isDragging = false;
+  });
+}
 
 function isPointInElement(x, y, el) {
   if (!el || el.style.display === "none" || el.style.opacity === "0" || el.classList.contains("hidden")) return false;
@@ -536,6 +570,7 @@ function isPointInElement(x, y, el) {
 // A click while Daisy is delivering a final answer only mutes that answer's
 // speech. When idle, clicking opens the settings window.
 canvas.addEventListener("click", () => {
+  if (dragMoved) return; // 拖动后不当作点击
   if (currentState === "speaking") {
     diriAPI.muteCurrentTts();
   } else {

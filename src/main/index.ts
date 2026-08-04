@@ -1207,7 +1207,10 @@ function downloadWhisperModel(modelName: string): void {
 
   const fail = (err: Error): void => {
     try { if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath); } catch { /* ignore */ }
-    sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 0, status: `下载失败: ${err.message}` });
+    sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, {
+      percent: 0,
+      status: `下载失败: ${err.message}。请用浏览器打开 ${modelInfo.url} 下载后放入 ${modelPath}`,
+    });
     logError("Whisper model download failed", err);
   };
 
@@ -1314,6 +1317,14 @@ function setupIpc(): void {
     if (win && !win.isDestroyed()) {
       win.setIgnoreMouseEvents(ignore, { forward: true });
     }
+  });
+
+  // Windows 悬浮球手动拖动：renderer 上报相对位移，主进程移动无边框窗口
+  ipcMain.on(IPC_CHANNELS.FLOAT_DRAG, (_event, dx: number, dy: number) => {
+    const fw = getFloatWindow();
+    if (!fw || fw.isDestroyed()) return;
+    const [x, y] = fw.getPosition();
+    fw.setPosition(x + Math.round(dx), y + Math.round(dy));
   });
 
   ipcMain.on(IPC_CHANNELS.TTS_MUTE_CURRENT, () => {

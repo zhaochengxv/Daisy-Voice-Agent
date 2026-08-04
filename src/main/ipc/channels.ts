@@ -51,6 +51,7 @@ export const IPC_CHANNELS = {
   // Float window interaction
   SET_IGNORE_MOUSE: "window:set-ignore-mouse",
   SET_DOCKED: "set-docked",
+  FLOAT_DRAG: "window:float-drag",
 
   // Native context menu
   CONTEXT_MENU_SHOW: "context-menu:show",
