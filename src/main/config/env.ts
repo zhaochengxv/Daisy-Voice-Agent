@@ -131,10 +131,12 @@ export function getBundledBin(name: string): string {
   const bundled = path.join(appPath, "assets", "bin", name);
   // Windows 下可执行文件带 .exe 后缀
   const exeSuffix = process.platform === "win32" ? ".exe" : "";
+  // child_process 不认 asar 虚拟路径，必须优先返回 .asar.unpacked 的真实文件系统路径。
+  // 顺序关键：unpacked + exe 在前，否则 Electron 的 asar fs 会让 existsSync 命中 asar 内
+  // 的 .exe（Windows 打包产物），spawn 会失败。
   const candidates = [
-    ...(appPath.includes(".asar") ? [bundled.replace(".asar", ".asar.unpacked")] : []),
-    bundled,
-    ...(exeSuffix ? [bundled + exeSuffix] : []),
+    ...(appPath.includes(".asar") ? [bundled.replace(".asar", ".asar.unpacked") + exeSuffix] : []),
+    bundled + exeSuffix,
     "/opt/homebrew/bin/" + name,
   ];
   for (const p of candidates) {
