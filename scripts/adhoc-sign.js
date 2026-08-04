@@ -31,6 +31,11 @@ const WHISPER_FILES = [
   "ggml-cpu-cascadelake.dll",
 ];
 
+// yt-dlp 官方 Windows 单文件构建（downloadMedia 在 Windows 上与 macOS 共用实现，依赖 yt-dlp.exe）
+const YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+const YTDLP_CACHE_DIR = path.join(os.homedir(), ".cache", "daisy-ytdlp");
+const YTDLP_CACHE_FILE = path.join(YTDLP_CACHE_DIR, "yt-dlp.exe");
+
 function download(url, dest) {
   execSync(`curl -fsSL -o "${dest}" "${url}"`, { stdio: "inherit" });
 }
@@ -126,10 +131,24 @@ for n in files:
   console.log(`[adhoc-sign] injected whisper-cli.exe + ${WHISPER_FILES.length - 1} DLLs into assets/bin`);
 }
 
+/** 确保 Windows 包内 assets/bin 含 yt-dlp.exe（download_media 跨平台共用实现，Windows 无此 exe 则 spawn 失败） */
+async function ensureWinYtDlp(context) {
+  const binDir = path.join(context.appOutDir, "resources", "app.asar.unpacked", "assets", "bin");
+  const target = path.join(binDir, "yt-dlp.exe");
+  if (fs.existsSync(target)) return;
+
+  ensureCache(YTDLP_CACHE_FILE, YTDLP_URL, YTDLP_CACHE_DIR);
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.copyFileSync(YTDLP_CACHE_FILE, target);
+  fs.chmodSync(target, 0o755);
+  console.log("[adhoc-sign] injected yt-dlp.exe into assets/bin");
+}
+
 exports.default = async function (context) {
   if (context.packager.platform.name === "windows") {
     await ensureWinFfmpeg(context);
     await ensureWinWhisper(context);
+    await ensureWinYtDlp(context);
     return;
   }
   if (context.packager.platform.name !== "mac") {
