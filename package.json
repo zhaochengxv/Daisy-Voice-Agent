@@ -96,6 +96,7 @@
       ]
     },
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -110,7 +111,9 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Daisy"
+      "shortcutName": "Daisy",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
     }
   }
 }
