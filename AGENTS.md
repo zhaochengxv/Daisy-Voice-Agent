@@ -82,10 +82,17 @@ npm run dev          # 构建并启动（开发模式）
 npm run pack         # 打包 .app（不签名）
 npm run dist:mac     # 打包 macOS .app + .dmg
 npm run dist:win     # 打包 Windows NSIS 安装包（x64，需在 Windows 环境执行）
+npm test             # vitest 单测（核心纯逻辑 + Windows 分派逻辑）
+npx tsc --noEmit     # 类型检查（不产出）
 
 # 安装并覆盖到 /Applications
 npm run pack && rm -rf /Applications/Daisy.app && cp -R releases/mac-arm64/Daisy.app /Applications/Daisy.app && open /Applications/Daisy.app
 ```
+
+## CI
+
+- `.github/workflows/ci.yml`：push main / PR 触发，macOS + Windows + Ubuntu 三平台跑 `npm ci` → `tsc --noEmit` → `npm test` → `npm run build`，预防双平台回归。
+- Windows 真机冒烟步骤见 `.monkeycode/docs/windows-smoke-test.md`。
 
 ## Windows 适配说明
 
