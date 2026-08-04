@@ -438,8 +438,45 @@ export async function openUrl(url: string): Promise<string> {
   }
 }
 
+/** Windows 读取 .docx 纯文本：docx 是 ZIP+XML，PowerShell 纯解析无需 Word */
 export async function readFileDocx(filePath: string): Promise<string> {
-  return unavailableOnWindows("读取 .docx 文档为纯文本");
+  try {
+    const script = `
+try {
+    $path = $env:DAISY_ARG0
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
+    $entry = $zip.GetEntry('word/document.xml')
+    if (-not $entry) { $zip.Dispose(); Write-Output "NOT_DOCX"; exit }
+    $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
+    $xml = $reader.ReadToEnd()
+    $reader.Dispose()
+    $zip.Dispose()
+    $sb = New-Object System.Text.StringBuilder
+    $xmlDoc = New-Object System.Xml.XmlDocument
+    $xmlDoc.LoadXml($xml)
+    $ns = New-Object System.Xml.XmlNamespaceManager($xmlDoc.NameTable)
+    $ns.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
+    $paras = $xmlDoc.SelectNodes('//w:p', $ns)
+    foreach ($p in $paras) {
+        $texts = $p.SelectNodes('.//w:t', $ns)
+        $line = ''
+        foreach ($t in $texts) { $line += $t.InnerText }
+        [void]$sb.AppendLine($line)
+    }
+    $out = $sb.ToString()
+    if ($out.Length -gt 100000) { $out = $out.Substring(0, 100000) + "\\n...(内容过长，已截断)" }
+    Write-Output $out
+} catch {
+    Write-Output ("FAILED:" + $_.Exception.Message)
+}`;
+    const result = await runPowerShell(script, { args: [filePath], timeoutMs: 30000 });
+    if (result.startsWith("NOT_DOCX")) return "读取文件失败: 不是有效的 .docx 文件";
+    if (result.startsWith("FAILED:")) return `读取文件失败: ${result.slice(7)}`;
+    return result || "（空文档）";
+  } catch (error) {
+    return `读取文件失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
 // ── Outlook/Word COM：检测到 Office 用 COM，未安装返回引导提示 ──

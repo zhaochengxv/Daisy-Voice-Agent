@@ -84,6 +84,10 @@ npm run dist:mac     # 打包 macOS .app + .dmg
 npm run dist:win     # 打包 Windows NSIS 安装包（x64，需在 Windows 环境执行）
 npm test             # vitest 单测（核心纯逻辑 + Windows 分派逻辑）
 npx tsc --noEmit     # 类型检查（不产出）
+node scripts/check-ps.js  # PowerShell 脚本语法验证（需 pwsh，见下）
+
+# PowerShell 语法验证：设置 PWSH 环境变量指向 pwsh（或 PATH / /tmp/pwsh/pwsh），
+# 运行 `node scripts/check-ps.js` 对 windows.ts 全部 PS 脚本做 Parser::ParseInput 检查。
 
 # 安装并覆盖到 /Applications
 npm run pack && rm -rf /Applications/Daisy.app && cp -R releases/mac-arm64/Daisy.app /Applications/Daisy.app && open /Applications/Daisy.app
