@@ -56,6 +56,7 @@
       "output": "releases"
     },
     "afterPack": "scripts/adhoc-sign.js",
+    "npmRebuild": false,
     "files": [
       "dist/**/*",
       "assets/**/*",
