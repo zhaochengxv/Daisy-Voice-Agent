@@ -1331,8 +1331,8 @@ function downloadWhisperModel(modelName: string): void {
       config.whisper.model = modelName;
       sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 100, status: "下载完成" });
       log(`Whisper model downloaded: ${modelPath} (${actualBytes} bytes)`);
-      // 模型到位后后台启动 whisper-server，让下载后的首次转写零冷启动
-      whisperServer.warmup();
+      // 模型到位后重启 whisper-server（若已挂载旧模型则换新），首次转写零冷启动
+      whisperServer.restart();
     });
   };
 

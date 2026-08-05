@@ -39,6 +39,7 @@ class WhisperServer {
   private port: number | null = null;
   private starting: Promise<number | null> | null = null;
   private failed = false;
+  private generation = 0;
 
   /** 确保 server 就绪并返回端口；不可用返回 null。幂等，可安全并发调用。 */
   async ensure(): Promise<number | null> {
@@ -64,8 +65,24 @@ class WhisperServer {
   }
 
   async transcribe(wav: Buffer, opts: TranscribeOptions = {}): Promise<string | null> {
-    const port = await this.ensure();
+    let port = await this.ensure();
     if (port === null) return null;
+
+    let text = await this.request(port, wav, opts);
+    if (text !== null) return text;
+
+    // 转写途中 server 异常（网络错误 / 5xx）：request 已 kill 并重置，
+    // 重启一次后重试，保住秒级体验；重启仍失败则交给调用方回退 CLI。
+    if (this.port === null) {
+      const restarted = await this.ensure();
+      if (restarted !== null) {
+        text = await this.request(restarted, wav, opts);
+      }
+    }
+    return text;
+  }
+
+  private async request(port: number, wav: Buffer, opts: TranscribeOptions): Promise<string | null> {
     try {
       const form = new FormData();
       form.append("file", new Blob([new Uint8Array(wav)], { type: "audio/wav" }), "audio.wav");
@@ -98,9 +115,15 @@ class WhisperServer {
     }
   }
 
+  /** 重启 server（模型切换后调用）：kill 当前实例并后台预热新模型。 */
+  async restart(): Promise<void> {
+    await this.dispose();
+    await this.warmup();
+  }
+
   async dispose(): Promise<void> {
+    this.generation++;
     const child = this.child;
-    const pid = child?.pid;
     this.child = null;
     this.port = null;
     this.starting = null;
@@ -109,7 +132,7 @@ class WhisperServer {
       child.kill();
       log("WhisperServer: disposed");
     }
-    this.clearPidFile(pid);
+    this.clearPidFile(child?.pid);
   }
 
   /** server 曾成功启动但在转写途中异常：kill 并重置，下次请求自动重启自愈。 */
@@ -122,6 +145,8 @@ class WhisperServer {
   }
 
   private async start(): Promise<number | null> {
+    const gen = this.generation;
+
     // 清理上次异常退出（崩溃）残留的孤儿进程，避免内存堆积
     this.killOrphan();
 
@@ -138,15 +163,16 @@ class WhisperServer {
     }
 
     for (let attempt = 0; attempt < START_ATTEMPTS; attempt++) {
+      if (this.generation !== gen) return null; // 启动期间被 dispose()
       const port = PORT_RANGE_START + Math.floor(Math.random() * (PORT_RANGE_END - PORT_RANGE_START));
-      if (await this.startOnPort(modelPath, port)) return port;
+      if (await this.startOnPort(modelPath, port, gen)) return port;
     }
 
     this.failed = true;
     return null;
   }
 
-  private async startOnPort(modelPath: string, port: number): Promise<boolean> {
+  private async startOnPort(modelPath: string, port: number, gen: number): Promise<boolean> {
     const args = [
       "-m", modelPath,
       "-t", String(getWhisperThreads()),
@@ -177,6 +203,11 @@ class WhisperServer {
     const settle = (ready: boolean) => {
       if (done) return;
       done = true;
+      if (this.generation !== gen) {
+        // 启动期间被 dispose()：杀掉子进程，不登记，避免孤儿进程泄漏
+        child.kill();
+        return;
+      }
       if (ready) {
         this.child = child;
         this.port = port;

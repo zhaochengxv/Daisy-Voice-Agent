@@ -80,6 +80,9 @@ describe("whisperServer", () => {
     const kill = vi.fn();
     (whisperServer as unknown as { child: unknown }).child = { kill };
     (whisperServer as unknown as { port: number | null }).port = 34567;
+    vi.spyOn(whisperServer, "ensure")
+      .mockResolvedValueOnce(34567)
+      .mockResolvedValue(null);
 
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 503 }));
 
@@ -92,12 +95,41 @@ describe("whisperServer", () => {
     const kill = vi.fn();
     (whisperServer as unknown as { child: unknown }).child = { kill };
     (whisperServer as unknown as { port: number | null }).port = 34567;
+    vi.spyOn(whisperServer, "ensure")
+      .mockResolvedValueOnce(34567)
+      .mockResolvedValue(null);
 
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNRESET")));
 
     expect(await whisperServer.transcribe(Buffer.alloc(4))).toBeNull();
     expect(kill).toHaveBeenCalled();
     expect((whisperServer as unknown as { port: number | null }).port).toBeNull();
+  });
+
+  it("server 转写中途崩溃后重启一次并重试成功", async () => {
+    const kill = vi.fn();
+    (whisperServer as unknown as { child: unknown }).child = { kill };
+    (whisperServer as unknown as { port: number | null }).port = 34567;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => "重试成功" });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(whisperServer, "ensure")
+      .mockResolvedValueOnce(34567)
+      .mockResolvedValue(45678);
+
+    expect(await whisperServer.transcribe(Buffer.alloc(4))).toBe("重试成功");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("restart 先 dispose 再 warmup", async () => {
+    const disposeSpy = vi.spyOn(whisperServer, "dispose").mockResolvedValue();
+    const warmupSpy = vi.spyOn(whisperServer, "warmup").mockResolvedValue();
+
+    await whisperServer.restart();
+
+    expect(disposeSpy).toHaveBeenCalled();
+    expect(warmupSpy).toHaveBeenCalled();
   });
 
   it("server 从未成功时网络错误不 kill（避免无谓操作）", async () => {
