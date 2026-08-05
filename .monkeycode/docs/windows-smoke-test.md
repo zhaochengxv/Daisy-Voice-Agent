@@ -4,9 +4,42 @@
 
 ## 环境准备（Windows）
 
-1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy。
+1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy（当前版本 v1.5.7）。
 2. 准备 `daisy.env`（火山 ASR + DeepSeek + Edge TTS 配置），与 macOS 同款。
 3. 唤醒词所需 `whisper-cli.exe` + `ggml-base.bin` 已由安装包注入/设置页下载（v1.5.6 起同时注入 `whisper-server.exe`）。
+
+## whisper 崩溃修复专项（v1.5.7 最高优先级）
+
+> 背景：v1.5.6 真机日志暴露 `whisper_init_with_params_no_state: use gpu = 1` 后立即 `process exited code=3221225477`（0xC0000005）反复崩溃 7+ 次，唤醒词与快捷键本地识别全部失败。根因：Windows 打包仅含 CPU 后端 DLL，whisper 默认 use_gpu=true 走 GPU 初始化路径触发访问违规（stderr 管道全缓冲，崩溃时日志常停在 use gpu=1，真实崩溃点在更后面的 GPU 枚举）。v1.5.7 起 `whisperNeedsNoGpu()` 在 win32 且 bin 目录无 `ggml-cuda.dll` 时自动加 `-ng`。
+
+| 场景 | 预期 | 通过 |
+|------|------|------|
+| 唤醒词「嘿 Daisy」 | 喊出后正常唤醒并自动监听，命令转写 1-3 秒返回，**不再出现 `exit code=3221225477`** | ☐ |
+| 快捷键本地识别（`SHORTCUT_USE_WHISPER=true`） | 按住说话松手即出 ASR final，日志出现 `WhisperServer: listening` / `use gpu = 0` | ☐ |
+| 日志无崩溃 | `diri-main.log` 全程无 `use gpu = 1`（应为 `use gpu = 0`，因 `-ng` 生效） | ☐ |
+| 模型加载成功 | 日志出现 `whisper_model_load: n_vocab = ...` 后续字段，不再停在 `use gpu` 一行 | ☐ |
+
+## 悬浮球实时语音文本（v1.5.7 新增）
+
+> 背景：v1.5.6 主进程已发送 ASR_PARTIAL/ASR_FINAL 到悬浮球，但悬浮球 DOM 无文本框导致用户看不到实时识别。v1.5.7 在 orb 右侧新增 280px 文本区。
+
+| 场景 | 预期 | 通过 |
+|------|------|------|
+| 实时识别文本 | 按住快捷键说话时，orb 右侧实时出现识别文字（随说话更新） | ☐ |
+| 松手后 final 文本 | 松手后最终文本在文本区短暂停留，随后进入 LLM 处理 | ☐ |
+| 无语音时 | 待机时文本区隐藏（透明），不遮挡桌面 | ☐ |
+| 窗口拖拽 | 拖动悬浮球时从 orb 或文本区均可拖（Windows 事件绑定在整窗） | ☐ |
+| 点击行为 | 点击文本区同 orb：speaking 时静音、其余打开设置 | ☐ |
+
+## 高配 GPU 可选加速（v1.5.7 新增）
+
+> 默认安装包是 CPU 版（`-ng`）。官方 v1.9.2 提供 CUDA 版 `whisper-cublas-*-bin-x64.zip`（含 ggml-cuda.dll），覆盖部署到 `assets\bin\` 后 `whisperNeedsNoGpu()` 自动放行 GPU。仅需在高配 N 卡机器验证。
+
+| 场景 | 预期 | 通过 |
+|------|------|------|
+| 部署 CUDA 版 | 从 whisper.cpp Releases 下载 cublas 版，用 Release/ 的 exe+dll 覆盖 `assets\bin\`，重启后日志出现 `use gpu = 1` 且不再崩溃 | ☐ |
+| 未部署 CUDA 版 | 无 N 卡/未覆盖时日志 `use gpu = 0`，正常 CPU 推理不崩溃 | ☐ |
+| GPU 推理加速 | small 模型唤醒词/转写在 GPU 下响应明显快于 CPU | ☐ |
 
 ## 界面与 LLM 提示适配
 
