@@ -144,46 +144,51 @@ function Get-LnkPath($appName) {
     return $null
 }
 
-if ($isBrowser -and $progId) {
-    $regCmd = (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\\$progId\\shell\\open\\command" -ErrorAction SilentlyContinue).'(default)'
-    if ($regCmd) {
-        $m = [regex]::Match($regCmd, '"([^"]+\\.exe)"')
-        if (-not $m.Success) { $m = [regex]::Match($regCmd, '([A-Za-z]:\\\\[^"]*\\.exe)') }
-        if ($m.Success) { $exe = $m.Groups[1].Value }
-    }
-    if (-not $exe) {
-        foreach ($cand in @('chrome','msedge','firefox','opera','brave')) {
-            $exe = Get-AppPath $cand
-            if ($exe) { break }
+try {
+    if ($isBrowser -and $progId) {
+        $regCmd = (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\\$progId\\shell\\open\\command" -ErrorAction SilentlyContinue).'(default)'
+        if ($regCmd) {
+            $m = [regex]::Match($regCmd, '"([^"]+\\.exe)"')
+            if (-not $m.Success) { $m = [regex]::Match($regCmd, '([A-Za-z]:\\\\[^"]*\\.exe)') }
+            if ($m.Success) { $exe = $m.Groups[1].Value }
         }
-    }
-} else {
-    if ($name -match '\\.exe$' -or $name -match '\\\\') {
-        if (Test-Path $name) { $exe = $name }
+        if (-not $exe) {
+            foreach ($cand in @('chrome','msedge','firefox','opera','brave')) {
+                $exe = Get-AppPath $cand
+                if ($exe) { break }
+            }
+        }
     } else {
-        $exe = Get-AppPath $name
+        if ($name -match '\\.exe$' -or $name -match '\\\\') {
+            if (Test-Path $name) { $exe = $name }
+        } else {
+            $exe = Get-AppPath $name
+        }
+        if (-not $exe) { $exe = Get-LnkPath $name }
     }
-    if (-not $exe) { $exe = Get-LnkPath $name }
-}
 
-if ($exe) {
-    Start-Process -FilePath $exe
-    Write-Output ("OK:" + $exe)
-} elseif ($name -match '^[A-Za-z0-9._-]+$') {
-    # PATH 上的裸命令（notepad/mspaint 等）
-    Start-Process -FilePath $name
-    if ($?) { Write-Output ("OK:" + $name) }
-} else {
-    Write-Output 'FAIL:EXE_NOT_FOUND'
-}`;
+    if ($exe) {
+        Start-Process -FilePath $exe
+        Write-Output ("OK:" + $exe)
+    } elseif ($name -match '^[A-Za-z0-9._-]+$') {
+        # PATH 上的裸命令（notepad/mspaint 等）
+        Start-Process -FilePath $name
+        if ($?) { Write-Output ("OK:" + $name) }
+    } else {
+        Write-Output 'FAIL:EXE_NOT_FOUND'
+    }
+} catch {
+    Write-Output 'FAIL:START_FAILED'
+}
+exit 0`;
 
   const result = await runPowerShell(script, { args: [name, isBrowserKeyword ? "1" : "0", progId] });
   if (result.startsWith("OK:")) {
     log(`windows.openApplication: launched ${name} -> ${result.slice(3)}`);
     return isBrowserKeyword ? "已打开默认浏览器" : `已打开 ${name}`;
   }
-  log(`windows.openApplication: failed to resolve exe for "${name}" (progId=${progId})`);
-  throw new Error(`无法定位 ${name} 的可执行文件`);
+  log(`windows.openApplication: failed to resolve/start "${name}" (progId=${progId}, result=${result})`);
+  throw new Error(`无法打开 ${name}`);
 }
 
 export async function quitApplication(name: string): Promise<string> {
@@ -515,11 +520,24 @@ export async function openUrl(url: string): Promise<string> {
     if (!/^https?:\/\//.test(finalUrl)) {
       finalUrl = "https://" + finalUrl;
     }
-    // explorer.exe 数组参数 + 无 shell：URL 交给系统默认浏览器
-    await execFileAsync("explorer.exe", [finalUrl]);
+    // explorer.exe 打开 URL 成功后也常返回退出码 1（真机日志反复出现
+    // "Silent tool execution failed" 的根因），execFile 因此永远抛错。
+    // 改用 PowerShell Start-Process（ShellExecute 语义）交给系统默认浏览器，
+    // 脚本以退出码 0 结束，URL 经 DAISY_ARG0 传入，无 shell 拼接注入面。
+    const script = `
+$ErrorActionPreference = 'Stop'
+$url = $env:DAISY_ARG0
+try {
+    Start-Process -FilePath $url
+} catch {
+    Write-Error "Failed to open URL: $_"
+    exit 1
+}
+exit 0`;
+    await runPowerShell(script, { args: [finalUrl] });
     return `已用默认浏览器打开 ${finalUrl}`;
-  } catch {
-    return `打开网址失败`;
+  } catch (error) {
+    return `打开网址失败: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 

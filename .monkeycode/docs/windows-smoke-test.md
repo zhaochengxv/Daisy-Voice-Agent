@@ -4,7 +4,7 @@
 
 ## 环境准备（Windows）
 
-1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy（当前版本 v1.5.9）。
+1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy（当前版本 v1.5.10）。
 2. 准备 `daisy.env`（火山 ASR + DeepSeek + Edge TTS 配置），与 macOS 同款。
 3. 唤醒词所需 `whisper-cli.exe` + `ggml-base.bin` 已由安装包注入/设置页下载（v1.5.6 起同时注入 `whisper-server.exe`）。
 
@@ -62,6 +62,20 @@
 | 悬浮球三区 | 悬浮球 + ASR 实时文本 + LLM 回答滚动区三块并排显示；LLM 边生成边滚入右侧 | ☐ |
 | 点击悬浮球 | 空闲/聆听点 orb = 切换录音/停止；speaking 点 orb = 静音 | ☐ |
 | 多轮对话 | 「重庆天气」→「打开浏览器」→「那换个城市呢」能记住前文（silent_done 不再清空会话） | ☐ |
+
+## v1.5.10 真机回归专项（悬浮球重构 + 链路修复）
+
+> 背景：v1.5.9 真机日志暴露——唤醒词 whisper-server `inference HTTP 400` 反复（monitor 把裸 PCM 传 server，server 只接受合法 WAV）、`打开网址失败`（explorer.exe 打开 URL 成功后也返回退出码 1）、Chrome/Edge 开应用 `runPowerShell failed`（PS 进程非零退出吞掉 OK 输出）、悬浮球无法点击/体验美观度差（Windows `focusable:false` 透明窗口收不到点击；胶囊三区视觉粗糙）。
+
+| 场景 | 预期 | 通过 |
+|------|------|------|
+| 唤醒词「嘿 Daisy」 | 日志**不再出现** `WhisperServer: inference HTTP 400`（monitor 传 WAV 而非裸 PCM）；出现 `matched pattern` 即唤醒 | ☐ |
+| 「打开百度」/ 网页跳转 | 日志无 `Silent tool execution failed`，返回「已用默认浏览器打开」；PowerShell `Start-Process` 生效 | ☐ |
+| 「打开 Chrome/Edge」 | 日志出现 `OK:` 输出被解析，返回「已打开」；**不再** `runPowerShell failed` 循环 | ☐ |
+| 悬浮球点击（Windows） | 点 orb 切换录音/停止、speaking 时点任意处静音、点文本区打开设置——**全部可点击**（focusable 已改 true） | ☐ |
+| 悬浮球视觉 | 玻璃胶囊随状态呼吸变色（蓝聆听/橙思考/绿播报/红错误），右上角状态徽标文字实时切换，无黑底方框 | ☐ |
+| 悬浮球拖拽 | 拖动整窗移动，位置保持（Windows） | ☐ |
+| macOS 鼠标穿透 | 待机时悬浮球不挡桌面点击；鼠标移到 orb/文本区时恢复交互（forward:true 已修） | ☐ |
 
 ## 界面与 LLM 提示适配
 

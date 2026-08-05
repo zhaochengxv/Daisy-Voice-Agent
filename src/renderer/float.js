@@ -1,6 +1,6 @@
 /* global diriAPI */
 
-// ── 极光配方配置 ──
+// ── 状态色板 ──
 const palettes = {
   idle: {
     main: "#6C6EF5",
@@ -9,6 +9,8 @@ const palettes = {
     deepDark: "#0d0728",
     highlight: "#C5C1FF",
     glow: "rgba(108, 110, 245, 0.45)",
+    label: "待命",
+    glowOpacity: 0.22,
     filaments: ["#6C6EF5", "#EC4899", "#8B5CF6"],
     blobs: ["#6C6EF5", "#8B5CF6", "#EC4899"],
     linearGradient: {
@@ -24,6 +26,8 @@ const palettes = {
     deepDark: "#02071a",
     highlight: "#B8DBFF",
     glow: "rgba(0, 162, 255, 0.55)",
+    label: "聆听中",
+    glowOpacity: 0.34,
     filaments: ["#00A2FF", "#38BDF8", "#7DD3FC"],
     blobs: ["#00A2FF", "#38BDF8", "#7DD3FC"],
     linearGradient: {
@@ -39,6 +43,8 @@ const palettes = {
     deepDark: "#1a0600",
     highlight: "#FFE0C0",
     glow: "rgba(255, 128, 51, 0.55)",
+    label: "思考中",
+    glowOpacity: 0.34,
     filaments: ["#FF8033", "#FF9955", "#FFBB77"],
     blobs: ["#FF8033", "#FF9955", "#FFBB77"],
     linearGradient: {
@@ -54,6 +60,8 @@ const palettes = {
     deepDark: "#010d06",
     highlight: "#B0FFD4",
     glow: "rgba(15, 200, 130, 0.55)",
+    label: "播报中",
+    glowOpacity: 0.34,
     filaments: ["#0FC882", "#19D291", "#37EBB4"],
     blobs: ["#0FC882", "#19D291", "#37EBB4"],
     linearGradient: {
@@ -69,6 +77,8 @@ const palettes = {
     deepDark: "#170101",
     highlight: "#FFC0C0",
     glow: "rgba(245, 96, 96, 0.55)",
+    label: "出错",
+    glowOpacity: 0.34,
     filaments: ["#EF4444", "#FBBF24", "#EC4899"],
     blobs: ["#F56060", "#DC2626", "#8B5CF6"],
     linearGradient: {
@@ -89,7 +99,7 @@ const targetConfigs = {
 
 // ── 运行状态 ──
 let currentState = 'idle';
-let speedMultiplier = 0.1; // 固定 0.1x
+const speedMultiplier = 0.1; // 固定 0.1x
 let visible = false;
 let isLoopRunning = false;
 let dpr = Math.min(window.devicePixelRatio || 1, 2.0); // 限制 Retina 最大缩放倍率为 2.0，降低高清绘制压力
@@ -124,12 +134,38 @@ const ctx = canvas.getContext("2d");
 const orbContainer = document.getElementById("orbContainer");
 const asrTextEl = document.getElementById("asrText");
 const llmOutputEl = document.getElementById("llmOutput");
+const statusLabelEl = document.getElementById("statusLabel");
+const orbHaloEl = document.getElementById("orbHalo");
+
+function hexToRgb(hex) {
+  const clean = hex.replace("#", "");
+  return {
+    r: parseInt(clean.substring(0, 2), 16),
+    g: parseInt(clean.substring(2, 4), 16),
+    b: parseInt(clean.substring(4, 6), 16)
+  };
+}
+
+/** 状态切换：更新 CSS 变量让整颗胶囊跟随状态色呼吸 */
+function applyStateVisuals(state) {
+  const palette = palettes[state] || palettes.idle;
+  const rgb = hexToRgb(palette.main);
+  const root = document.documentElement;
+  root.style.setProperty("--accent", palette.main);
+  root.style.setProperty("--accent-rgb", `${rgb.r}, ${rgb.g}, ${rgb.b}`);
+  root.style.setProperty("--glow-opacity", String(palette.glowOpacity));
+  if (orbHaloEl) {
+    orbHaloEl.style.background =
+      `radial-gradient(circle, rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.35) 0%, transparent 65%)`;
+  }
+  if (statusLabelEl) statusLabelEl.textContent = palette.label;
+}
 
 function resizeCanvas() {
   dpr = Math.min(window.devicePixelRatio || 1, 2.0);
   const rect = canvas.getBoundingClientRect();
-  const w = rect.width || 120;
-  const h = rect.height || 120;
+  const w = rect.width || 92;
+  const h = rect.height || 92;
   canvas.style.width = w + "px";
   canvas.style.height = h + "px";
   canvas.width = w * dpr;
@@ -141,15 +177,6 @@ setTimeout(resizeCanvas, 50);
 
 const lerp = (a, b, t) => a + (b - a) * t;
 
-function hexToRgb(hex) {
-  const clean = hex.replace("#", "");
-  return {
-    r: parseInt(clean.substring(0, 2), 16),
-    g: parseInt(clean.substring(2, 4), 16),
-    b: parseInt(clean.substring(4, 6), 16)
-  };
-}
-
 // ── IPC 通信 ──
 diriAPI.onStateUpdate((payload) => {
   try {
@@ -157,18 +184,21 @@ diriAPI.onStateUpdate((payload) => {
     let state = data.state || "idle";
     if (state === "processing") state = "thinking";
     currentState = state;
+    applyStateVisuals(state);
   } catch (err) {
     logToMain("onStateUpdate error: " + err.message);
   }
 });
 
 // ── 实时语音文本显示 ──
-// 主进程通过 ASR_PARTIAL / ASR_FINAL / ASR_ERROR 推送识别结果到悬浮球，
-// 这里负责把文本渲染到 orb 右侧的显示区。
 function setAsrText(text) {
-  if (asrTextEl) {
+  if (!asrTextEl) return;
+  if (text) {
     asrTextEl.textContent = text;
-    asrTextEl.classList.toggle("hidden", !text);
+    asrTextEl.classList.remove("hidden", "placeholder");
+  } else {
+    asrTextEl.classList.add("hidden");
+    asrTextEl.classList.remove("placeholder");
   }
 }
 
@@ -185,8 +215,6 @@ diriAPI.onAsrError((message) => {
 });
 
 // ── LLM 回答滚动输出区 ──
-// 主进程把流式增量推到悬浮球右侧；渲染端负责清洗（剥离双通道标签/JSON 外壳）并
-// 自动滚动到底部。每次会话展示 orb 时清空，新一轮回答从空开始。
 let llmBuffer = "";
 function sanitizeDisplay(chunk) {
   return String(chunk || "")
@@ -586,9 +614,10 @@ let isMouseOverInteractiveElement = false;
 if (diriAPI.platform === "darwin") {
   window.addEventListener("mousemove", (e) => {
     const overOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
+    const overBadge = isPointInElement(e.clientX, e.clientY, document.getElementById("statusBadge"));
     const overText = asrTextEl && !asrTextEl.classList.contains("hidden") && isPointInElement(e.clientX, e.clientY, asrTextEl);
     const overLlm = llmOutputEl && !llmOutputEl.classList.contains("hidden") && isPointInElement(e.clientX, e.clientY, llmOutputEl);
-    const isOverInteractive = overOrb || overText || overLlm;
+    const isOverInteractive = overOrb || overBadge || overText || overLlm;
     if (isOverInteractive !== isMouseOverInteractiveElement) {
       isMouseOverInteractiveElement = isOverInteractive;
       diriAPI.setIgnoreMouse(!isMouseOverInteractiveElement);
@@ -655,5 +684,7 @@ window.addEventListener("click", (e) => {
   }
 });
 
+// 初始状态色（避免首帧等待 IPC 事件才上色）
+applyStateVisuals("idle");
 resizeCanvas();
 render();

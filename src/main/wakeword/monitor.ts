@@ -192,7 +192,10 @@ export class WakeWordMonitor extends EventEmitter {
     try {
       // 优先走 whisper-server 常驻转写（唤醒词每次触发都重建进程 + 加载模型在低配
       // Windows 上可耗 40+ 秒）；server 不可用时回退 whisper-cli。
-      const serverText = await whisperServer.transcribe(audioData, {
+      // 注意：server 端 /inference 只接受合法 WAV（内部按 FormData file=audio.wav
+      // 解析），传裸 PCM 会导致 HTTP 400（真机日志反复出现的根因），这里复用上面
+      // 已生成好的 WAV 缓冲，与快捷键路径 whisper.ts 的写法保持一致。
+      const serverText = await whisperServer.transcribe(wav, {
         language: "auto",
         prompt: "Hey Daisy",
       });

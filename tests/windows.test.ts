@@ -29,6 +29,8 @@ import {
   parseHotkey,
   progIdToBrowserName,
   getWindowsDesktopPath,
+  openUrl,
+  openApplication,
 } from "../src/main/control/windows";
 import { isWindows, runPowerShell } from "../src/main/utils/windowsShell";
 
@@ -166,6 +168,53 @@ describe("getWindowsDesktopPath", () => {
   it("runPowerShell 失败时回退到 ~/Desktop（不依赖真实平台）", async () => {
     const result = await getWindowsDesktopPath();
     expect(result).toBe(path.join(os.homedir(), "Desktop"));
+  });
+});
+
+describe("openUrl（v1.5.10 explorer 退出码 1 修复）", () => {
+  it("runPowerShell 正常返回时不再误报失败", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const result = await openUrl("example.com");
+    expect(result).toContain("已用默认浏览器打开");
+    expect(result).toContain("https://example.com");
+    expect(runPowerShell).toHaveBeenCalledTimes(1);
+  });
+
+  it("URL 缺少协议时自动补 https://", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const result = await openUrl("example.com/a?q=1");
+    expect(result).toContain("https://example.com/a?q=1");
+  });
+
+  it("已带协议不重复叠加", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const result = await openUrl("https://daisy.example.com/path");
+    expect(result).toContain("https://daisy.example.com/path");
+  });
+
+  it("runPowerShell 抛错时返回失败信息而非永远成功", async () => {
+    vi.mocked(runPowerShell).mockRejectedValueOnce(new Error("Start-Process failed"));
+    const result = await openUrl("example.com");
+    expect(result).toContain("打开网址失败");
+  });
+});
+
+describe("openApplication（v1.5.10 PS 非零退出吞 OK 输出修复）", () => {
+  it("OK: 前缀 → 返回已打开", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("OK:C:\\Windows\\System32\\notepad.exe");
+    const result = await openApplication("notepad");
+    expect(result).toBe("已打开 notepad");
+    expect(runPowerShell).toHaveBeenCalledTimes(1);
+  });
+
+  it("FAIL:EXE_NOT_FOUND → 抛错（由调用方按 handled:false 处理，避免 LLM 空转）", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("FAIL:EXE_NOT_FOUND");
+    await expect(openApplication("不存在的应用xyz")).rejects.toThrow();
+  });
+
+  it("runPowerShell 失败不再静默吞掉返回已打开", async () => {
+    vi.mocked(runPowerShell).mockRejectedValueOnce(new Error("powershell exit 1"));
+    await expect(openApplication("chrome")).rejects.toThrow();
   });
 });
 
