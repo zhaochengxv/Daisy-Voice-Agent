@@ -5,7 +5,14 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { log } from "../utils/logger";
-import { getWhisperModelPath, getBundledBin, getWhisperExecutionEnv } from "../config/env";
+import {
+  config,
+  getWhisperModelPath,
+  getBundledBin,
+  getWhisperExecutionEnv,
+  getWhisperThreads,
+  expectedWhisperModelBytes,
+} from "../config/env";
 
 const execFileAsync = promisify(execFile);
 
@@ -144,7 +151,9 @@ export class WakeWordMonitor extends EventEmitter {
         }
       }
     } catch (error) {
-      log(`WakeWordMonitor: whisper error: ${error instanceof Error ? error.message : String(error)}`);
+      const err = error as (Error & { stdout?: string; stderr?: string });
+      // 超时/崩溃时 whisper-cli 的 stderr 是判定根因的关键（初始化进度 vs 静默卡死 vs 明确报错）
+      log(`WakeWordMonitor: whisper error: ${err.message} | stdout="${String(err.stdout ?? "").trim().slice(0, 300)}" stderr="${String(err.stderr ?? "").trim().slice(0, 500)}"`);
     }
 
     this.processing = false;
@@ -158,18 +167,30 @@ export class WakeWordMonitor extends EventEmitter {
     fs.writeFileSync(wavPath, wav);
 
     try {
-      const { stdout } = await execFileAsync(WHISPER_CLI, [
-        "-m", getWhisperModelPath(),
+      const modelPath = getWhisperModelPath();
+      if (!fs.existsSync(modelPath)) {
+        log(`WakeWordMonitor: whisper model not found: ${modelPath}`);
+        return "";
+      }
+      const modelBytes = fs.statSync(modelPath).size;
+      const expectedBytes = expectedWhisperModelBytes(config.whisper.model);
+      if (expectedBytes > 0 && modelBytes < expectedBytes * 0.9) {
+        log(`WakeWordMonitor: whisper model truncated (${modelBytes} bytes), skipping`);
+        return "";
+      }
+
+      const { stdout, stderr } = await execFileAsync(WHISPER_CLI, [
+        "-m", modelPath,
         "-f", wavPath,
-        "-l", "en",
+        "-l", "auto",
         "--no-timestamps",
-        "-t", "4",
+        "-t", String(getWhisperThreads()),
         "-np",
         "--prompt", "Hey Daisy",
         "-sns",
       ], {
         env: getWhisperExecutionEnv(WHISPER_CLI),
-        timeout: 10000,
+        timeout: 25000,
         maxBuffer: 1024 * 1024,
         windowsHide: true,
       });

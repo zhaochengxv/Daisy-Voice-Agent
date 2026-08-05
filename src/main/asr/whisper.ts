@@ -6,7 +6,14 @@ import path from "node:path";
 import os from "node:os";
 import { log } from "../utils/logger";
 import { VAD } from "../wakeword/monitor";
-import { getWhisperModelPath, getBundledBin, getWhisperExecutionEnv } from "../config/env";
+import {
+  config,
+  getWhisperModelPath,
+  getBundledBin,
+  getWhisperExecutionEnv,
+  getWhisperThreads,
+  expectedWhisperModelBytes,
+} from "../config/env";
 
 const execFileAsync = promisify(execFile);
 
@@ -108,30 +115,39 @@ export class WhisperAsrSession extends EventEmitter {
     fs.writeFileSync(wavPath, wav);
 
     try {
+      const modelError = validateWhisperModel();
+      if (modelError) {
+        log(`WhisperAsrSession: ${modelError}`);
+        this.emit("error", modelError);
+        return;
+      }
+
       log("WhisperAsrSession: running whisper-cli...");
-      const { stdout } = await execFileAsync(WHISPER_CLI, [
+      const { stdout, stderr } = await execFileAsync(WHISPER_CLI, [
         "-m", getWhisperModelPath(),
         "-f", wavPath,
         "-l", "zh",
         "--no-timestamps",
-        "-t", "4",
+        "-t", String(getWhisperThreads()),
         "-np",
         "--prompt", "Daisy, 黛西",
         "-sns",
       ], {
         env: getWhisperExecutionEnv(WHISPER_CLI),
-        timeout: 15000,
+        timeout: 45000,
         maxBuffer: 1024 * 1024,
         windowsHide: true,
       });
 
       const text = stdout.trim().replace(/\[.*?\]/g, "").trim();
       this.lastText = text;
-      log(`WhisperAsrSession: result="${text}"`);
+      log(`WhisperAsrSession: result="${text}" stderr="${String(stderr).trim().slice(0, 300)}"`);
       this.emit("final", text);
     } catch (error) {
-      log(`WhisperAsrSession error: ${error instanceof Error ? error.message : String(error)}`);
-      this.emit("error", error instanceof Error ? error.message : String(error));
+      const err = error as (Error & { stdout?: string; stderr?: string });
+      // 超时/崩溃时 whisper-cli 的 stderr 是判定根因的关键（初始化进度 vs 静默卡死 vs 明确报错）
+      log(`WhisperAsrSession error: ${err.message} | stdout="${String(err.stdout ?? "").trim().slice(0, 300)}" stderr="${String(err.stderr ?? "").trim().slice(0, 500)}"`);
+      this.emit("error", err.message);
     } finally {
       fs.promises.unlink(wavPath).catch(() => {});
       this.processing = false;
@@ -156,4 +172,17 @@ export class WhisperAsrSession extends EventEmitter {
     header.writeUInt32LE(dataLength, 40);
     return Buffer.concat([header, pcm]);
   }
+}
+
+function validateWhisperModel(): string | null {
+  const modelPath = getWhisperModelPath();
+  if (!fs.existsSync(modelPath)) {
+    return `Whisper model not found: ${modelPath}. 请先在设置页下载模型。`;
+  }
+  const actualBytes = fs.statSync(modelPath).size;
+  const expectedBytes = expectedWhisperModelBytes(config.whisper.model);
+  if (expectedBytes > 0 && actualBytes < expectedBytes * 0.9) {
+    return `Whisper model truncated (${actualBytes} bytes < ${expectedBytes} bytes): ${modelPath}. 请重新下载模型。`;
+  }
+  return null;
 }

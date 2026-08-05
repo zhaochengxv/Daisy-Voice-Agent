@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { app, ipcMain, Menu, BrowserWindow, systemPreferences } from "electron";
 import { autoUpdater } from "electron-updater";
-import { config, isAsrConfigured, isLlmConfigured, getWhisperModelPath, getBundledBin, WHISPER_MODELS, getWritableEnvPath } from "./config/env";
+import { config, isAsrConfigured, isLlmConfigured, getWhisperModelPath, getBundledBin, WHISPER_MODELS, getWritableEnvPath, expectedWhisperModelBytes } from "./config/env";
 import { IPC_CHANNELS } from "./ipc/channels";
 import { createFloatWindow, getFloatWindow, sendToFloatWindow, showFloatWindow, hideFloatWindow } from "./windows/floatWindow";
 import { createSettingsWindow, getSettingsWindow } from "./windows/settingsWindow";
@@ -571,17 +571,19 @@ function endListening(): void {
     }
   }, 500);
 
-  // Safety net: ASR fast path returns in 800ms, slow path 10s. Use 12s.
+  // Safety net: 云端 ASR fast path 800ms、slow path 10s，用 12s；
+  // 本地 whisper-cli 首次推理（弱 CPU + 142MB base 模型）可达数十秒，放宽到 50s，避免转写被中途杀掉。
+  const useWhisper = config.whisper.shortcutUseWhisper;
   safetyNetTimer = setTimeout(() => {
     if (isSessionActive) {
-      log("ASR final timeout (12s), forcing session reset");
+      log(`ASR final timeout (${useWhisper ? 50 : 12}s), forcing session reset`);
       isSessionActive = false;
       asrSession = null;
       updateState("idle");
       startAutoHideTimer();
     }
     safetyNetTimer = null;
-  }, 12000);
+  }, useWhisper ? 50000 : 12000);
 }
 
 function startVoiceListening(): void {
@@ -727,16 +729,17 @@ function endVoiceListening(): void {
     }
   }, 500);
 
+  // Voice 模式固定用本地 whisper-cli（弱 CPU 首次推理可达数十秒），安全网放宽到 50s
   safetyNetTimer = setTimeout(() => {
     if (isSessionActive) {
-      log("Voice ASR final timeout (12s), forcing session reset");
+      log("Voice ASR final timeout (50s), forcing session reset");
       isSessionActive = false;
       asrSession = null;
       updateState("idle");
       startAutoHideTimer();
     }
     safetyNetTimer = null;
-  }, 12000);
+  }, 50000);
 }
 
 function handleUserInput(text: string): void {
@@ -1194,8 +1197,16 @@ function downloadWhisperModel(modelName: string): void {
   }
 
   if (fs.existsSync(modelPath)) {
-    sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 100, status: "已存在" });
-    return;
+    const actualBytes = fs.statSync(modelPath).size;
+    const expectedBytes = expectedWhisperModelBytes(modelName);
+    if (expectedBytes > 0 && actualBytes < expectedBytes * 0.9) {
+      // 上次下载中断留下的残缺模型会让 whisper-cli 永久失败，删除后重新下载
+      log(`Whisper model exists but truncated (${actualBytes} < ${expectedBytes} bytes), re-downloading`);
+      fs.rmSync(modelPath, { force: true });
+    } else {
+      sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 100, status: "已存在" });
+      return;
+    }
   }
 
   sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 0, status: "开始下载..." });
@@ -1302,9 +1313,17 @@ function downloadWhisperModel(modelName: string): void {
     });
     file.on("finish", () => {
       file.close();
+      const actualBytes = fs.statSync(modelPath).size;
+      const expectedBytes = expectedWhisperModelBytes(modelName);
+      if (expectedBytes > 0 && actualBytes < expectedBytes * 0.9) {
+        // 下载完成但体积不达标（网络中断/服务端截断），视为失败，删除后让用户重试
+        log(`Whisper model download incomplete (${actualBytes} < ${expectedBytes} bytes), discarding`);
+        fail(new Error(`模型不完整（${actualBytes} 字节 < ${expectedBytes} 字节）`));
+        return;
+      }
       config.whisper.model = modelName;
       sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 100, status: "下载完成" });
-      log(`Whisper model downloaded: ${modelPath}`);
+      log(`Whisper model downloaded: ${modelPath} (${actualBytes} bytes)`);
     });
   };
 

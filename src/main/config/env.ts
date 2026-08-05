@@ -151,6 +151,20 @@ export function getBundledBin(name: string): string {
   return name + exeSuffix; // fallback to PATH
 }
 
+export function getWhisperThreads(): number {
+  const cores = os.cpus().length;
+  if (cores <= 0) return 2;
+  // 2 核机器上 -t 4 反而因线程争抢更慢；弱 CPU 用与核心数匹配的线程数。
+  return Math.min(4, Math.max(1, cores - 1));
+}
+
+export function expectedWhisperModelBytes(modelName: string): number {
+  const size = WHISPER_MODELS[modelName]?.size || "";
+  const match = size.match(/^(\d+)\s*MB/i);
+  if (!match) return 0;
+  return parseInt(match[1], 10) * 1024 * 1024;
+}
+
 export function getWhisperBackendName(cpuModel = os.cpus()[0]?.model || ""): string | null {
   if (/Apple M1\b/i.test(cpuModel)) return "libggml-cpu-apple_m1.so";
   if (/Apple M[23]\b/i.test(cpuModel)) return "libggml-cpu-apple_m2_m3.so";
