@@ -6,6 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { log } from "../utils/logger";
 import { VAD } from "../wakeword/monitor";
+import { whisperServer } from "./whisperServer";
 import {
   config,
   getWhisperModelPath,
@@ -123,26 +124,41 @@ export class WhisperAsrSession extends EventEmitter {
       }
 
       log("WhisperAsrSession: running whisper-cli...");
-      const { stdout, stderr } = await execFileAsync(WHISPER_CLI, [
-        "-m", getWhisperModelPath(),
-        "-f", wavPath,
-        "-l", "zh",
-        "--no-timestamps",
-        "-t", String(getWhisperThreads()),
-        "-np",
-        "--prompt", "Daisy, 黛西",
-        "-sns",
-      ], {
-        env: getWhisperExecutionEnv(WHISPER_CLI),
-        timeout: 45000,
-        maxBuffer: 1024 * 1024,
-        windowsHide: true,
-      });
 
-      const text = stdout.trim().replace(/\[.*?\]/g, "").trim();
-      this.lastText = text;
-      log(`WhisperAsrSession: result="${text}" stderr="${String(stderr).trim().slice(0, 300)}"`);
-      this.emit("final", text);
+      // 优先走 whisper-server 常驻转写（模型仅加载一次，低配机器提速显著）；
+      // server 不可用时回退到一次一进程的 whisper-cli，行为不退化。
+      const serverText = await whisperServer.transcribe(wav, {
+        language: "zh",
+        prompt: "Daisy, 黛西",
+      });
+      let text: string;
+      let cliInfo = "";
+      if (serverText === null) {
+        const { stdout } = await execFileAsync(WHISPER_CLI, [
+          "-m", getWhisperModelPath(),
+          "-f", wavPath,
+          "-l", "zh",
+          "--no-timestamps",
+          "-t", String(getWhisperThreads()),
+          "-np",
+          "--prompt", "Daisy, 黛西",
+          "-sns",
+        ], {
+          env: getWhisperExecutionEnv(WHISPER_CLI),
+          timeout: 45000,
+          maxBuffer: 1024 * 1024,
+          windowsHide: true,
+        });
+        text = stdout;
+        cliInfo = " (cli fallback)";
+      } else {
+        text = serverText;
+      }
+
+      const clean = text.trim().replace(/\[.*?\]/g, "").trim();
+      this.lastText = clean;
+      log(`WhisperAsrSession: result="${clean}"${cliInfo}`);
+      this.emit("final", clean);
     } catch (error) {
       const err = error as (Error & { stdout?: string; stderr?: string });
       // 超时/崩溃时 whisper-cli 的 stderr 是判定根因的关键（初始化进度 vs 静默卡死 vs 明确报错）

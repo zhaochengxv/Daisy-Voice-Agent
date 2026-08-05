@@ -17,6 +17,7 @@ const WHISPER_CACHE_DIR = path.join(os.homedir(), ".cache", "daisy-whisper");
 const WHISPER_CACHE_FILE = path.join(WHISPER_CACHE_DIR, WHISPER_ASSET);
 const WHISPER_FILES = [
   "whisper-cli.exe",
+  "whisper-server.exe",
   "whisper.dll",
   "ggml.dll",
   "ggml-base.dll",
@@ -67,7 +68,7 @@ async function ensureWinWhisper(context) {
   const binDir = path.join(context.appOutDir, "resources", "app.asar.unpacked", "assets", "bin");
 
   // 清理随 assets/** 混入的 macOS 二进制（Mach-O），Windows 上永不调用
-  for (const macBin of ["whisper-cli", "SwitchAudioSource", "yt-dlp"]) {
+  for (const macBin of ["whisper-cli", "whisper-server", "SwitchAudioSource", "yt-dlp"]) {
     const p = path.join(binDir, macBin);
     if (fs.existsSync(p)) {
       fs.rmSync(p, { force: true });
@@ -128,7 +129,7 @@ for n in files:
     fs.copyFileSync(src, path.join(binDir, name));
   }
   fs.rmSync(extractDir, { recursive: true, force: true });
-  console.log(`[adhoc-sign] injected whisper-cli.exe + ${WHISPER_FILES.length - 1} DLLs into assets/bin`);
+  console.log(`[adhoc-sign] injected whisper-cli.exe + whisper-server.exe + ${WHISPER_FILES.length - 2} DLLs into assets/bin`);
 }
 
 /** 确保 Windows 包内 assets/bin 含 yt-dlp.exe（download_media 跨平台共用实现，Windows 无此 exe 则 spawn 失败） */

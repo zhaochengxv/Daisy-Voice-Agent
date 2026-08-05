@@ -154,8 +154,9 @@ export function getBundledBin(name: string): string {
 export function getWhisperThreads(): number {
   const cores = os.cpus().length;
   if (cores <= 0) return 2;
-  // 2 核机器上 -t 4 反而因线程争抢更慢；弱 CPU 用与核心数匹配的线程数。
-  return Math.min(4, Math.max(1, cores - 1));
+  // 单次进程启动时线程争抢会让 -t 过高反而更慢；但至少保留 2 线程，
+  // 低配 2 核机器上单线程推理 base 模型会拖到几十秒。
+  return Math.min(4, Math.max(2, cores - 1));
 }
 
 export function expectedWhisperModelBytes(modelName: string): number {

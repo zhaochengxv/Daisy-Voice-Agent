@@ -56,3 +56,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 发布命名已根治：package.json `nsis.artifactName="${productName}.Setup.${version}.${ext}"`，本地文件/latest.yml/gh 上传名三者一致（此前空格名→latest.yml 用 dash 名→gh 转点名，自动更新 404，需手动修 latest.yml）。
   - 发布流程：gh 凭据经 `/app/agent/bin/agent git-credential-helper get`（protocol=https host=github.com）取 GH_TOKEN，用完 unset；`gh release create v1.5.x` + `gh release upload` 上传 exe/blockmap/latest.yml，latest.yml 的 url 必须与实际上传资产名一致。
 
+[Project Knowledge Summary]
+- Date: 2026-08-05
+- Context: Discovered by Agent while performing whisper-server 常驻优化与打包验证（v1.5.5）
+- Category: Environment Configuration / Build Methods / Testing Methods
+- Instructions:
+  - Linux 沙箱网络限制：huggingface.co 与 hf-mirror.com 均不可达（SSL/308/000），ggml.ai 可达但路径 404、modelscope.cn 可达（需正确 repo）。GitHub release 资产可下载（whisper-bin-x64.zip 等，缓存于 ~/.cache/daisy-*）。
+  - Electron GUI 可在本沙箱真实运行验证：先 `apt-get install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 libgtk-3-0`，再 `timeout 120 xvfb-run -a npx electron . --no-sandbox`（root 需 --no-sandbox；无音频设备时麦克风初始化报错属预期，其余逻辑可正常验证）。
+  - whisper.cpp 源码可在本沙箱编译（cmake 构建，产出 whisper-server/whisper-cli），用于参数行为核对（与 Windows 版同源码，参数一致）。
+  - `npm run dist:win` 在已打 NSIS 补丁的沙箱可完整跑通（打包+注入+signtool），产物在 releases/win-unpacked，可本地核查 assets/bin 注入文件是否齐全。
+

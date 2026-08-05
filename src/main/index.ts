@@ -14,6 +14,7 @@ import { createTray, destroyTray } from "./windows/tray";
 import { initAudioRecorder, startRecording, stopRecording, getIsRecording, setWakeWordCaptureEnabled, getAudioDevices, getAudioInputDevice, setAudioInputDevice } from "./audio/recorder";
 import { AsrSession } from "./asr";
 import { WhisperAsrSession } from "./asr/whisper";
+import { whisperServer } from "./asr/whisperServer";
 import { DeepSeekClient, DualChannel } from "./llm/deepseek";
 import { ConversationManager, prefetchDesktopPath } from "./llm/conversation";
 import { EdgeTTSPlayer, startTTSCleanup } from "./tts/edgeTTS";
@@ -132,6 +133,7 @@ app.on("before-quit", () => {
   globalShortcut?.destroy();
   asrSession?.stop();
   wakeWordMonitor?.stop();
+  whisperServer.dispose();
   destroyTray();
   // Clean up TTS temp files
   const ttsDir = path.join(require("os").tmpdir(), "diri-tts");
@@ -172,6 +174,11 @@ function initialize(): void {
   setupPowerMonitor();
   initCommandRouter();
   conversationHistoryStore.load();
+  // 启用了 whisper 转写（快捷键本地 ASR）或唤醒词时，后台预热 whisper-server，
+  // 让首次转写零冷启动（模型加载提前到应用启动阶段完成）。
+  if (config.whisper.shortcutUseWhisper || wakeWordMonitor) {
+    whisperServer.warmup();
+  }
   log("Initialization complete");
 }
 
@@ -1324,6 +1331,8 @@ function downloadWhisperModel(modelName: string): void {
       config.whisper.model = modelName;
       sendToSettingsWindow(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS, { percent: 100, status: "下载完成" });
       log(`Whisper model downloaded: ${modelPath} (${actualBytes} bytes)`);
+      // 模型到位后后台启动 whisper-server，让下载后的首次转写零冷启动
+      whisperServer.warmup();
     });
   };
 

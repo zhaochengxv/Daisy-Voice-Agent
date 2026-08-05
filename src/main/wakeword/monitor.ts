@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { log } from "../utils/logger";
+import { whisperServer } from "../asr/whisperServer";
 import {
   config,
   getWhisperModelPath,
@@ -167,6 +168,16 @@ export class WakeWordMonitor extends EventEmitter {
     fs.writeFileSync(wavPath, wav);
 
     try {
+      // 优先走 whisper-server 常驻转写（唤醒词每次触发都重建进程 + 加载模型在低配
+      // Windows 上可耗 40+ 秒）；server 不可用时回退 whisper-cli。
+      const serverText = await whisperServer.transcribe(audioData, {
+        language: "auto",
+        prompt: "Hey Daisy",
+      });
+      if (serverText !== null) {
+        return serverText.trim().replace(/\[.*?\]/g, "").trim();
+      }
+
       const modelPath = getWhisperModelPath();
       if (!fs.existsSync(modelPath)) {
         log(`WakeWordMonitor: whisper model not found: ${modelPath}`);
