@@ -70,6 +70,38 @@ describe("whisperServer", () => {
     expect((whisperServer as unknown as { port: number | null }).port).toBeNull();
   });
 
+  it("启动失败进入冷却期：ensure 直接返回 null 且不再尝试启动", async () => {
+    const startSpy = vi
+      .spyOn(whisperServer as unknown as { start: () => Promise<number | null> }, "start")
+      .mockResolvedValue(null);
+    (whisperServer as unknown as { failUntil: number }).failUntil = Date.now() + 30000;
+    (whisperServer as unknown as { failed: boolean }).failed = false;
+
+    const port = await whisperServer.ensure();
+
+    expect(port).toBeNull();
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it("冷却期结束后 ensure 自动重试启动", async () => {
+    const startSpy = vi
+      .spyOn(whisperServer as unknown as { start: () => Promise<number | null> }, "start")
+      .mockResolvedValue(34567);
+    (whisperServer as unknown as { failUntil: number }).failUntil = Date.now() - 1000;
+    (whisperServer as unknown as { failed: boolean }).failed = false;
+
+    const port = await whisperServer.ensure();
+
+    expect(port).toBe(34567);
+    expect(startSpy).toHaveBeenCalled();
+  });
+
+  it("dispose 重置失败冷却期，restart 后可立即重试", async () => {
+    (whisperServer as unknown as { failUntil: number }).failUntil = Date.now() + 30000;
+    await whisperServer.dispose();
+    expect((whisperServer as unknown as { failUntil: number }).failUntil).toBe(0);
+  });
+
   it("warmup 幂等且不抛错", async () => {
     const ensureSpy = vi.spyOn(whisperServer, "ensure").mockResolvedValue(34567);
     await expect(whisperServer.warmup()).resolves.toBeUndefined();

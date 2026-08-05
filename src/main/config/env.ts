@@ -159,6 +159,16 @@ export function getWhisperThreads(): number {
   return Math.min(4, Math.max(2, cores - 1));
 }
 
+/**
+ * Windows 打包仅含 CPU 后端 DLL（ggml-cpu-*.dll）。whisper 默认 use_gpu=true，
+ * 在无 GPU 后端时初始化仍走 GPU 路径，导致 ACCESS_VIOLATION (0xC0000005) 段错误
+ * 反复崩溃，必须显式 -ng 禁 GPU。macOS 上保留默认（Apple Silicon Metal GPU 加速，
+ * 强制 CPU 会显著拖慢推理），故 -ng 仅 Windows 生效。
+ */
+export function whisperNeedsNoGpu(): boolean {
+  return process.platform === "win32";
+}
+
 export function expectedWhisperModelBytes(modelName: string): number {
   const size = WHISPER_MODELS[modelName]?.size || "";
   const match = size.match(/^(\d+)\s*MB/i);

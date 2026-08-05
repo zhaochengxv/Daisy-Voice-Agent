@@ -6,6 +6,9 @@ import { isWindows } from "../utils/windowsShell";
 import { getSettingsWindow, createSettingsWindow } from "./settingsWindow";
 
 const ORB_SIZE = 92;
+// 悬浮球右侧实时语音文本显示区宽度。窗口整体加宽，但 orb 仍按 ORB_SIZE
+// 居中定位，文本区位于 orb 右侧。
+const ASR_TEXT_WIDTH = 280;
 
 let floatWindow: BrowserWindow | null = null;
 
@@ -23,7 +26,7 @@ export function createFloatWindow(): BrowserWindow {
   const y = screenY - 20;
 
   floatWindow = new BrowserWindow({
-    width: ORB_SIZE,
+    width: ORB_SIZE + ASR_TEXT_WIDTH,
     height: ORB_SIZE,
     x,
     y,

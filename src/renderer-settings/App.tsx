@@ -511,6 +511,11 @@ export default function App() {
                             onChange={(e) => handleInputChange("VOLCENGINE_RESOURCE_ID", e.target.value)}
                             placeholder="volc.seedasr.sauc.duration" className="glass-input" />
                         </div>
+                        <div className="rounded-[14px] bg-amber-50 border border-amber-200 px-4 py-3 text-[11px] leading-relaxed text-amber-700">
+                          <span className="font-semibold">识别失败或报 403？</span> 大概率是 App ID / Access Token / Resource ID
+                          三者与火山控制台开通的服务不匹配。请逐一核对：App ID 和 Access Token 在控制台「语音技术」应用详情中获取；
+                          Resource ID 需与你购买的套餐服务一致（开通大模型流式识别时控制台会给出）。修改后重启 Daisy 生效。
+                        </div>
                       </div>
                       <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-4 mt-4">
                         <div className="flex items-center justify-between">

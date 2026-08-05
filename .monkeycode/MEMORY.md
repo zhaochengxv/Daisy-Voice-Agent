@@ -67,3 +67,24 @@ Entries discovered by the Agent during task execution should follow this format:
   - `npm run dist:win` 在已打 NSIS 补丁的沙箱可完整跑通（打包+注入+signtool），产物在 releases/win-unpacked，可本地核查 assets/bin 注入文件是否齐全。
   - whisper-server 常驻转写架构：Windows 打包已注入 whisper-server.exe；macOS 侧 assets/bin 未捆绑 server，依赖 `/opt/homebrew/bin/whisper-server`（brew whisper-cpp 是否含该二进制未在真机确认），缺失时自动回退 whisper-cli，行为不退化。`scripts/self-test.js` 可查本机 server 可用性。
 
+[Project Knowledge Summary]
+- Date: 2026-08-05
+- Context: Discovered by Agent while analyzing v1.5.5 真机日志（Windows）定位「语音无反应」根因
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 日志关键证据链：`WhisperAsrSession: stop() called, total audio: 0 bytes` → `Empty transcript, going idle` → 用户无任何反应；`maxLevel=0.0000` 大量出现（436 次 vs 非零 599 次）且 04:47-04:50 从 maxLevel=1.0932 永久跌到 0，说明麦克风进入「数字静音」（不是用户没说话，是管线死了）且无自愈。
+  - 蓝牙输入（如 V12 pro）是静音高频诱因：04:36 日志出现 `ensureMic: bluetooth input detected ... retrying without AEC/AGC/NS`，之后仍可再次静音。修复方向：renderer audio.js 增加自愈（track.onmute/onended 重建管线 + 录音中连续 4s 数字静音触发 rebuildMic，10s 冷却）。
+  - 唤醒词 whisper-cli 报 `read_audio_data: trying to decode with miniaudio` 多为「采集到的是全零音频」的连带效应（静音管线的结果），非解码器本身故障。
+  - 火山 ASR 日志 `ASR configured: false` 表示用户未填 VOLCENGINE 凭证；`shortcutUseWhisper=true` 且出现过一次成功转写（`ASR final: 打開百多`）证明 LLM/TTS/工具链路正常，问题集中在 唤醒词→录音→ASR 采集链路。
+  - Windows 下 `open_url` 用 electron shell 打开百度曾失败 → 走 `run_shell_command cmd /c start` 也失败（`Silent tool execution failed`），浏览器打开链路需在真机再验；windows.ts 的 openUrl 走 explorer.exe 数组参数相对可靠。
+
+[Project Knowledge Summary]
+- Date: 2026-08-05
+- Context: Discovered by Agent while analyzing v1.5.6 真机日志（Windows）定位 whisper 全线崩溃根因
+- Category: Troubleshooting & Debugging / Environment Configuration
+- Instructions:
+  - Windows 打包的 whisper.cpp v1.9.2 只带 CPU 后端 DLL（ggml-cpu-*.dll，无 CUDA 产物），但 whisper-server/whisper-cli 默认 use_gpu=true。日志证据：stderr 停在 `whisper_init_with_params_no_state: use gpu = 1` 后立即 `process exited code=3221225477`（=0xC0000005 访问违规），反复 7+ 次，唤醒词与快捷键本地识别全部失败。修复：启动参数加 `-ng`（仅 Windows，用 `whisperNeedsNoGpu()` 判断；macOS 保留 Metal GPU，强制 CPU 会显著拖慢推理）。
+  - v1.5.6 日志 `whisper-server: load_backend: loaded CPU backend ...ggml-cpu-alderlake.dll` 出现说明 CPU 后端加载本身成功，崩溃点在 GPU 初始化——`-ng` 后无需重下模型。
+  - 判定「采集没问题、推理挂了」的证据链：`Renderer: AUDIO_LOG: audio flowing ... maxLevel=0.0013-0.0017` 持续非零（麦克风电平正常）+ VAD 出现 `inSpeech=true`（唤醒词有触发到 processing）+ 但 whisper 二进制反复 0xC0000005 → 问题在 ASR 推理段而非采集段。
+  - 火山 ASR 日志 `ASR configured: true` + `ASR: WebSocket error: Unexpected server response: 403` = 凭证已填但 AppID/Token/ResourceID 三者与已开通服务不匹配（鉴权失败），非「没触发」；代码侧只做提示，根因在用户火山控制台侧。
+

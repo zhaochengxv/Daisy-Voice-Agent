@@ -532,7 +532,15 @@ function wakeAndStartListening(): void {
     }
     isSessionActive = false;
     stopRecording();
-    updateState("error", message);
+    // 403 几乎总是火山 AppID / Access Token / ResourceId 鉴权不匹配，给出
+    // 可操作的排查方向，避免用户误判为"没声音/没触发"。
+    if (message.includes("403")) {
+      const hint = "火山 ASR 鉴权失败(403)：请检查 daisy.env 中 VOLCENGINE_APP_ID、VOLCENGINE_ACCESS_TOKEN 与 VOLCENGINE_RESOURCE_ID 是否与火山控制台开通的服务一致";
+      log(hint);
+      updateState("error", hint);
+    } else {
+      updateState("error", message);
+    }
     startAutoHideTimer();
   });
 

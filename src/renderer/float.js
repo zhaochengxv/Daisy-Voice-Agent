@@ -122,6 +122,7 @@ let interrupted = false;
 const canvas = document.getElementById("orbCanvas");
 const ctx = canvas.getContext("2d");
 const orbContainer = document.getElementById("orbContainer");
+const asrTextEl = document.getElementById("asrText");
 
 function resizeCanvas() {
   dpr = Math.min(window.devicePixelRatio || 1, 2.0);
@@ -160,6 +161,28 @@ diriAPI.onStateUpdate((payload) => {
   }
 });
 
+// ── 实时语音文本显示 ──
+// 主进程通过 ASR_PARTIAL / ASR_FINAL / ASR_ERROR 推送识别结果到悬浮球，
+// 这里负责把文本渲染到 orb 右侧的显示区。
+function setAsrText(text) {
+  if (asrTextEl) {
+    asrTextEl.textContent = text;
+    asrTextEl.classList.toggle("hidden", !text);
+  }
+}
+
+diriAPI.onAsrPartial((text) => {
+  setAsrText(text || "");
+});
+
+diriAPI.onAsrFinal((text) => {
+  setAsrText(text || "");
+});
+
+diriAPI.onAsrError((message) => {
+  setAsrText(message || "");
+});
+
 diriAPI.onShowWindow(() => {
   visible = true;
   wakeScale = 1.0;
@@ -179,6 +202,7 @@ diriAPI.onShowWindow(() => {
 diriAPI.onHideWindow(() => {
   visible = false;
   if (wakeShrinkTimer) { clearTimeout(wakeShrinkTimer); wakeShrinkTimer = null; }
+  setAsrText("");
 });
 
 diriAPI.onSetDocked((docked) => {
@@ -520,12 +544,15 @@ function drawGlassHighlights(cx, cy, radius, activeState, isDark) {
 // ── 鼠标穿透智能判断（仅 macOS）──
 // Windows 悬浮球可交互（点击打开设置/拖动），若动态切换穿透会在鼠标移出
 // orb 后使窗口永久穿透、事件再无法接收，导致卡死。
+// macOS 下 orb 与右侧文本区都是可交互区域，鼠标经过时取消穿透。
 let isMouseOverInteractiveElement = false;
 if (diriAPI.platform === "darwin") {
   window.addEventListener("mousemove", (e) => {
-    const isOverOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
-    if (isOverOrb !== isMouseOverInteractiveElement) {
-      isMouseOverInteractiveElement = isOverOrb;
+    const overOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
+    const overText = asrTextEl && !asrTextEl.classList.contains("hidden") && isPointInElement(e.clientX, e.clientY, asrTextEl);
+    const isOverInteractive = overOrb || overText;
+    if (isOverInteractive !== isMouseOverInteractiveElement) {
+      isMouseOverInteractiveElement = isOverInteractive;
       diriAPI.setIgnoreMouse(!isMouseOverInteractiveElement);
     }
   });
@@ -534,12 +561,13 @@ if (diriAPI.platform === "darwin") {
 // ── Windows 悬浮球拖动 ──
 // 无边框窗口无系统拖拽条，-webkit-app-region: drag 会拦截 click，故用
 // renderer 上报相对位移 + 主进程 setPosition 实现手动拖动。
+// 拖动绑定在整个窗口上（orb 与右侧文本区均可拖动），避免文本区成为死角。
 let isDragging = false;
 let dragMoved = false;
 let lastDragX = 0;
 let lastDragY = 0;
 if (diriAPI.platform !== "darwin") {
-  canvas.addEventListener("mousedown", (e) => {
+  window.addEventListener("mousedown", (e) => {
     isDragging = true;
     dragMoved = false;
     lastDragX = e.screenX;
@@ -569,7 +597,7 @@ function isPointInElement(x, y, el) {
 
 // A click while Daisy is delivering a final answer only mutes that answer's
 // speech. When idle, clicking opens the settings window.
-canvas.addEventListener("click", () => {
+window.addEventListener("click", () => {
   if (dragMoved) return; // 拖动后不当作点击
   if (currentState === "speaking") {
     diriAPI.muteCurrentTts();

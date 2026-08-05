@@ -9,12 +9,14 @@ import {
   getWhisperModelPath,
   getWhisperExecutionEnv,
   getWhisperThreads,
+  whisperNeedsNoGpu,
 } from "../config/env";
 
 const WHISPER_SERVER = getBundledBin("whisper-server");
 const PID_FILE = path.join(os.tmpdir(), "diri-whisper-server.pid");
-const SERVER_READY_TIMEOUT = 15000;
-const START_ATTEMPTS = 10;
+const SERVER_READY_TIMEOUT = 8000;
+const START_ATTEMPTS = 4;
+const FAIL_COOLDOWN_MS = 30000;
 const TRANSCODE_TIMEOUT = 45000;
 const PORT_RANGE_START = 30000;
 const PORT_RANGE_END = 50000;
@@ -40,11 +42,14 @@ class WhisperServer {
   private starting: Promise<number | null> | null = null;
   private failed = false;
   private generation = 0;
+  private failUntil = 0;
 
   /** 确保 server 就绪并返回端口；不可用返回 null。幂等，可安全并发调用。 */
   async ensure(): Promise<number | null> {
     if (this.port !== null) return this.port;
     if (this.failed) return null;
+    // 启动失败冷却期内不再尝试，直接回退 CLI，避免每次转写都卡满就绪探测
+    if (Date.now() < this.failUntil) return null;
     if (this.starting) return this.starting;
     this.starting = this.start();
     try {
@@ -128,6 +133,7 @@ class WhisperServer {
     this.port = null;
     this.starting = null;
     this.failed = false;
+    this.failUntil = 0;
     if (child) {
       child.kill();
       log("WhisperServer: disposed");
@@ -168,7 +174,10 @@ class WhisperServer {
       if (await this.startOnPort(modelPath, port, gen)) return port;
     }
 
-    this.failed = true;
+    // 启动失败（进程秒退/无法监听/模型损坏等）：进入 30s 冷却，避免每次转写
+    // 重复尝试卡时间；冷却结束后自动重试，实现环境修复后的自愈。
+    this.failUntil = Date.now() + FAIL_COOLDOWN_MS;
+    log(`WhisperServer: start failed after ${START_ATTEMPTS} attempts, cooling down ${FAIL_COOLDOWN_MS}ms`);
     return null;
   }
 
@@ -177,6 +186,10 @@ class WhisperServer {
       "-m", modelPath,
       "-t", String(getWhisperThreads()),
       "-l", "auto",
+      // Windows 打包仅含 CPU 后端 DLL（ggml-cpu-*.dll），whisper-server 默认
+      // use_gpu=true 在无 GPU 后端时仍走 GPU 初始化，导致 ACCESS_VIOLATION
+      // (0xC0000005) 段错误反复崩溃，须显式禁 GPU（仅 Windows，macOS 保留 Metal）。
+      ...(whisperNeedsNoGpu() ? ["-ng"] : []),
       "--port", String(port),
       "-nt",
       "-sns",
@@ -190,14 +203,6 @@ class WhisperServer {
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (d: Buffer) => { stderrBuf += String(d); });
-    child.on("exit", (code) => {
-      if (this.child === child) {
-        this.child = null;
-        this.port = null;
-        this.clearPidFile(child.pid);
-      }
-      log(`WhisperServer: process exited code=${code}`);
-    });
 
     let done = false;
     const settle = (ready: boolean) => {
@@ -219,6 +224,17 @@ class WhisperServer {
       }
     };
     child.on("error", () => settle(false));
+    child.on("exit", (code) => {
+      if (this.child === child) {
+        this.child = null;
+        this.port = null;
+        this.clearPidFile(child.pid);
+      }
+      log(`WhisperServer: process exited code=${code}`);
+      // 启动期间进程退出（缺依赖 DLL / 崩溃秒退）：立即失败本次尝试，
+      // 不等就绪探测超时，快速回退 CLI
+      settle(false);
+    });
     return this.waitReady(port, SERVER_READY_TIMEOUT).then((ready) => {
       settle(ready);
       return ready;

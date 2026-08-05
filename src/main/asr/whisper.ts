@@ -14,6 +14,7 @@ import {
   getWhisperExecutionEnv,
   getWhisperThreads,
   expectedWhisperModelBytes,
+  whisperNeedsNoGpu,
 } from "../config/env";
 
 const execFileAsync = promisify(execFile);
@@ -143,6 +144,7 @@ export class WhisperAsrSession extends EventEmitter {
           "-np",
           "--prompt", "Daisy, 黛西",
           "-sns",
+          ...(whisperNeedsNoGpu() ? ["-ng"] : []),
         ], {
           env: getWhisperExecutionEnv(WHISPER_CLI),
           timeout: 45000,

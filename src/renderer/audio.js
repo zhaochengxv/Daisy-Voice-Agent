@@ -16,6 +16,10 @@ let operationGeneration = 0;
 let wakeWordEnabled = false;
 let shuttingDown = false;
 let inputDeviceId = "";
+let lastNonZeroLevelAt = 0;
+let rebuildCooldownUntil = 0;
+const SILENCE_REBUILD_MS = 4000;
+const REBUILD_COOLDOWN_MS = 10000;
 
 function logToMain(msg) {
   diriAPI.sendRendererLog("AUDIO_LOG: " + msg);
@@ -147,6 +151,10 @@ function releaseMic(reason) {
   if (gainNode) {
     try { gainNode.disconnect(); } catch (_error) {}
   }
+  // Mark mic not-ready BEFORE stopping tracks so the track.onended/onmute
+  // self-heal handlers don't mistake an intentional release for a device drop.
+  micReady = false;
+  isRecording = false;
   if (mediaStream) {
     try {
       mediaStream.getTracks().forEach((track) => track.stop());
@@ -159,8 +167,7 @@ function releaseMic(reason) {
   source = null;
   processor = null;
   gainNode = null;
-  micReady = false;
-  isRecording = false;
+  lastNonZeroLevelAt = 0;
 
   if (contextToClose && contextToClose.state !== "closed") {
     contextToClose.close().catch((error) => {
@@ -225,6 +232,22 @@ async function ensureMic() {
         newStream = await acquireStream(false);
       }
 
+      // Device-level self-heal: if the OS stream ends or is muted (headset
+      // unplugged / Bluetooth renegotiation / driver hiccup), rebuild the whole
+      // pipeline instead of silently feeding digital zeros to ASR sessions.
+      newStream.getAudioTracks().forEach((track) => {
+        track.onended = () => {
+          if (!micReady || shuttingDown) return;
+          logToMain("ensureMic: audio track ended unexpectedly, rebuilding");
+          rebuildMic("audio track ended unexpectedly");
+        };
+        track.onmute = () => {
+          if (!micReady || shuttingDown) return;
+          logToMain("ensureMic: audio track muted unexpectedly, rebuilding");
+          rebuildMic("audio track muted unexpectedly");
+        };
+      });
+
       newContext = new AudioContext({ sampleRate: 48000 });
       newSource = newContext.createMediaStreamSource(newStream);
 
@@ -240,14 +263,28 @@ async function ensureMic() {
         if (!isRecording && !wakeWordEnabled) return;
         const inputData = event.inputBuffer.getChannelData(0);
 
+        let max = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          const abs = Math.abs(inputData[i]);
+          if (abs > max) max = abs;
+        }
+        if (max > 0) lastNonZeroLevelAt = Date.now();
+
         audioLogCounter++;
         if (audioLogCounter % 100 === 0) {
-          let max = 0;
-          for (let i = 0; i < inputData.length; i++) {
-            const abs = Math.abs(inputData[i]);
-            if (abs > max) max = abs;
-          }
           logToMain("audio flowing: " + audioLogCounter + " frames, maxLevel=" + max.toFixed(4));
+        }
+
+        // Self-heal: an active recording session expects the user's voice, so
+        // sustained exact-digital-silence while recording means the pipeline
+        // died (Bluetooth AEC collapse / device hang). Rebuild it once.
+        if (isRecording && lastNonZeroLevelAt > 0) {
+          const silentMs = Date.now() - lastNonZeroLevelAt;
+          if (silentMs >= SILENCE_REBUILD_MS) {
+            logToMain("digital silence during recording for " + silentMs + "ms, rebuilding mic pipeline");
+            lastNonZeroLevelAt = 0;
+            rebuildMic("digital silence during recording");
+          }
         }
 
         const downsampled = downsampleBuffer(inputData, inputSampleRate);
@@ -323,6 +360,33 @@ async function ensureMic() {
   }
 }
 
+async function rebuildMic(reason) {
+  const now = Date.now();
+  if (now < rebuildCooldownUntil) return;
+  rebuildCooldownUntil = now + REBUILD_COOLDOWN_MS;
+  logToMain("rebuildMic: " + reason);
+  const keepRecording = isRecording;
+  const keepWanted = desiredRecording;
+  const keepWake = wakeWordEnabled;
+  releaseMic("mic self-heal rebuild: " + reason);
+  operationGeneration++;
+  if (keepRecording || keepWanted || keepWake) {
+    try {
+      await ensureMic();
+      if (!shuttingDown) {
+        isRecording = keepRecording || desiredRecording;
+        if (isRecording) diriAPI.sendAudioReady();
+      }
+    } catch (err) {
+      logToMain("rebuildMic ensureMic failed: " + err.message);
+      if (isRecording) {
+        isRecording = false;
+        diriAPI.sendAudioError("麦克风恢复失败：" + err.message);
+      }
+    }
+  }
+}
+
 async function setWakeWordEnabled(enabled) {
   wakeWordEnabled = enabled;
   logToMain("setWakeWordEnabled: enabled=" + enabled + " isRecording=" + isRecording);
@@ -348,6 +412,10 @@ async function startRecording() {
   const myGeneration = ++operationGeneration;
   desiredRecording = true;
   logToMain("startRecording: generation=" + myGeneration + " isRecording=" + isRecording + " micReady=" + micReady);
+
+  // Baseline the silence watchdog: a session that yields no audio for
+  // SILENCE_REBUILD_MS while recording triggers a pipeline rebuild.
+  lastNonZeroLevelAt = Date.now();
 
   try {
     const ready = await ensureMic();

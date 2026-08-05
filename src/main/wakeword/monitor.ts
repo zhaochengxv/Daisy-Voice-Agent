@@ -13,6 +13,7 @@ import {
   getWhisperExecutionEnv,
   getWhisperThreads,
   expectedWhisperModelBytes,
+  whisperNeedsNoGpu,
 } from "../config/env";
 
 const execFileAsync = promisify(execFile);
@@ -199,6 +200,7 @@ export class WakeWordMonitor extends EventEmitter {
         "-np",
         "--prompt", "Hey Daisy",
         "-sns",
+        ...(whisperNeedsNoGpu() ? ["-ng"] : []),
       ], {
         env: getWhisperExecutionEnv(WHISPER_CLI),
         timeout: 25000,
