@@ -65,4 +65,5 @@ Entries discovered by the Agent during task execution should follow this format:
   - Electron GUI 可在本沙箱真实运行验证：先 `apt-get install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 libgtk-3-0`，再 `timeout 120 xvfb-run -a npx electron . --no-sandbox`（root 需 --no-sandbox；无音频设备时麦克风初始化报错属预期，其余逻辑可正常验证）。
   - whisper.cpp 源码可在本沙箱编译（cmake 构建，产出 whisper-server/whisper-cli），用于参数行为核对（与 Windows 版同源码，参数一致）。
   - `npm run dist:win` 在已打 NSIS 补丁的沙箱可完整跑通（打包+注入+signtool），产物在 releases/win-unpacked，可本地核查 assets/bin 注入文件是否齐全。
+  - whisper-server 常驻转写架构：Windows 打包已注入 whisper-server.exe；macOS 侧 assets/bin 未捆绑 server，依赖 `/opt/homebrew/bin/whisper-server`（brew whisper-cpp 是否含该二进制未在真机确认），缺失时自动回退 whisper-cli，行为不退化。`scripts/self-test.js` 可查本机 server 可用性。
 

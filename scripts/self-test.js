@@ -67,6 +67,16 @@ const cliCandidates = [
 const cliPath = cliCandidates.find((candidate) => fs.existsSync(candidate));
 console.log(`  whisper-cli: ${cliPath || "未找到"} (${cliPath ? "已安装" : "未安装"})`);
 
+// 常驻 whisper-server：存在时转写走 HTTP（模型只加载一次，低配机器提速显著）；
+// 缺失时自动回退 whisper-cli，行为不退化。若此处未找到，说明本机未安装/未注入。
+const serverCandidates = [
+  path.join(process.cwd(), "assets", "bin", "whisper-server"),
+  "/Applications/Daisy.app/Contents/Resources/app.asar.unpacked/assets/bin/whisper-server",
+  "/opt/homebrew/bin/whisper-server",
+];
+const serverPath = serverCandidates.find((candidate) => fs.existsSync(candidate));
+console.log(`  whisper-server: ${serverPath || "未找到（转写走 CLI 回退）"} (${serverPath ? "已安装" : "未安装"})`);
+
 const cpuModel = os.cpus()[0]?.model || "";
 const backendName = /Apple M1\b/i.test(cpuModel)
   ? "libggml-cpu-apple_m1.so"
