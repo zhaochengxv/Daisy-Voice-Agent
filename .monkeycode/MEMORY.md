@@ -93,7 +93,9 @@ Entries discovered by the Agent during task execution should follow this format:
 - Context: Discovered by Agent while doing 低配/高配双机适配（用户用低配 Windows 测试，另有高配电脑）
 - Category: Environment Configuration / Build Methods / Troubleshooting & Debugging
 - Instructions:
-  - Windows 打包 whisper-bin-x64.zip 只含 ggml-cpu-*.dll（无 CUDA/Vulkan/HIP 后端），故 Windows 无论高低配统一 `-ng` 强制 CPU 是正确的；高配即使有 NVIDIA 独显也加载不了 GPU 后端，不要为高配 Windows 恢复 use_gpu。macOS 保留默认（Metal GPU 加速，M1-M4 后端库经 GGML_BACKEND_PATH 指定）。
+  - Windows 打包 whisper-bin-x64.zip 是官方 CPU 版（仅 ggml-cpu-*.dll）。但官方 v1.9.2 同时提供 CUDA 版 whisper-cublas-*-bin-x64.zip（670MB，含 ggml-cuda.dll 512MB + cublas runtime 550MB），高配 N 卡可用 GPU——「Windows 用不上 GPU」是错的，准确说法是「默认 CPU 包用不上，CUDA 版可用」。已做动态检测：`whisperNeedsNoGpu()` 在 win32 且 bin 目录无 ggml-cuda.dll 时返回 true（加 -ng），用户覆盖部署 CUDA 版后自动放行 GPU。
+  - 实测确认（Linux CPU-only build）：`use_gpu=1` 会安全回退不崩（whisper_backend_init_gpu 无 GPU 返回 nullptr），Windows 崩溃是该 build 的 GPU 枚举/加载路径访问违规。且 stderr 管道重定向全缓冲，崩溃时只吐缓冲开头几行（常停在 use gpu=1），真实崩溃点在后面——诊断时勿只信最后一行。
+  - 高配 GPU 部署：下载 whisper-cublas-*-bin-x64.zip，把 Release/ 的 whisper-server.exe、whisper-cli.exe 和全部 dll 覆盖安装目录 resources\app.asar.unpacked\assets\bin\，重启即启用 GPU（检测 ggml-cuda.dll）。低配/无 N 卡保持 CPU 版。
   - 高低配差异只用「线程数 + 模型档位」承载：`getWhisperServerThreads()` 常驻 server 低配(≤4核)用满可用核、高配(8核+)上限 8 线程留余量给 LLM/TTS；CLI 一次性回退仍用 `getWhisperThreads()`（上限 4，避免进程启动争抢）。
   - 模型档位：低配(≤4核)推荐 Tiny/Base 保响应速度，高配可选 Small 提准确率；设置页「语音唤醒→依赖模型」下拉已含三档及建议文案，切换后需重新下载并重启。不要代码强制降档（用户低配跑 Small 是自主选择，只给引导）。
   - 用户测试机是低配 Windows：验证「低配下 -ng 后唤醒词/快捷键恢复」是 v1.5.7 验收主线；高配机器作为第二验证点（确认 server 线程自适应不引入新问题）。
