@@ -166,6 +166,21 @@ export class AsrSession extends EventEmitter {
     });
     const socket = this.socket;
 
+    // 鉴权失败（401/403）时 ws 库只给 "Unexpected server response: 403"，
+    // 不包含响应体，用户无法判断是 AppID/Token/ResourceId 哪个不对。
+    // ws 提供 unexpected-response 事件，可读到真实 statusCode 与 body。
+    socket.on("unexpected-response", (_req, res) => {
+      let body = "";
+      res.on("data", (chunk: Buffer) => {
+        body += chunk.toString("utf8");
+      });
+      res.on("end", () => {
+        const snippet = body.trim().slice(0, 300);
+        log(`ASR: volcano HTTP ${res.statusCode ?? 0}, body="${snippet}"`);
+        this.emit("error", volcanoHttpHint(res.statusCode ?? 0, snippet, config.asr.wsUrl));
+      });
+    });
+
     socket.on("open", () => {
       if (this.finalEmitted || (!this.sessionActive && !this.stopping)) {
         log("ASR: WS open but session no longer active, closing");
@@ -174,7 +189,8 @@ export class AsrSession extends EventEmitter {
       }
       this.ready = true;
       log("ASR: WebSocket connected, sending config + flushing audio");
-      socket.send(buildFullClientRequest(this.seq++));
+      const modelName = deriveModelName(config.asr.wsUrl);
+      socket.send(buildFullClientRequest(this.seq++, 16000, modelName));
       this.flushAudio(this.stopping);
 
       if (this.stopping && this.endTimeout) {
@@ -190,8 +206,11 @@ export class AsrSession extends EventEmitter {
     this.socket.on("message", (data: Buffer | ArrayBuffer | Buffer[]) => {
       const response = parseVolcengineResponse(Buffer.from(data as Buffer));
       if (response.code) {
-        log(`ASR: server error code ${response.code}`);
-        this.emit("error", `火山 ASR 错误 ${response.code}`);
+        const detail = response.payloadMsg
+          ? JSON.stringify(response.payloadMsg).slice(0, 200)
+          : "";
+        log(`ASR: server error code ${response.code}${detail ? ` detail=${detail}` : ""}`);
+        this.emit("error", `火山 ASR 错误 ${response.code}${detail ? `：${detail}` : ""}`);
         return;
       }
 
@@ -213,7 +232,14 @@ export class AsrSession extends EventEmitter {
 
     this.socket.on("error", (error: Error) => {
       log(`ASR: WebSocket error: ${error.message}`);
-      this.emit("error", error.message);
+      // ws 库对非 101 响应只报 "Unexpected server response: <status>"，
+      // 把状态码解析出来映射成可操作的排查提示（unexpected-response 路径已在上面处理 body）。
+      const statusMatch = error.message.match(/(\d{3})/);
+      if (statusMatch) {
+        this.emit("error", volcanoHttpHint(Number(statusMatch[1] ?? 0), "", config.asr.wsUrl));
+      } else {
+        this.emit("error", error.message);
+      }
     });
 
     this.socket.on("close", () => {
@@ -259,4 +285,31 @@ export class AsrSession extends EventEmitter {
       this.emit("error", `发送音频失败: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+}
+
+/**
+ * 从 wsUrl 推导 model_name：火山要求 payload 的 model_name 与 wsUrl 路径末段
+ * 集群名一致（免费试用版 bigmodel / 正式版 bigmodel_async）。用户改了 wsUrl
+ * 而 payload 仍是旧的 bigmodel → 403。推导失败默认 bigmodel（免费版最常见）。
+ */
+export function deriveModelName(wsUrl: string): string {
+  try {
+    const seg = new URL(wsUrl).pathname.split("/").filter(Boolean).pop();
+    return seg || "bigmodel";
+  } catch {
+    return "bigmodel";
+  }
+}
+
+/** 把火山 HTTP 状态码映射成可操作的排查提示；附加 body 片段供真机日志定位。 */
+export function volcanoHttpHint(status: number, body: string, wsUrl: string): string {
+  const hintByStatus: Record<number, string> = {
+    400: "火山 ASR 请求格式错误(400)：请检查 VOLCENGINE_ASR_WS_URL 是否为有效的流式接口地址",
+    401: "火山 ASR 鉴权失败(401)：VOLCENGINE_ACCESS_TOKEN 无效或已过期，请到火山控制台重新生成",
+    403: "火山 ASR 鉴权失败(403)：请核对 VOLCENGINE_APP_ID / VOLCENGINE_ACCESS_TOKEN / VOLCENGINE_RESOURCE_ID 三者是否属于同一应用，且 wsUrl 集群与控制台开通的服务一致（免费版 bigmodel / 正式版 bigmodel_async）",
+    404: "火山 ASR 接口不存在(404)：请检查 VOLCENGINE_ASR_WS_URL 路径是否填写正确",
+    429: "火山 ASR 用量超限(429)：免费集群并发/时长配额已用尽，请稍后再试或升级正式版",
+  };
+  const base = hintByStatus[status] || `火山 ASR HTTP ${status}，请检查配置`;
+  return body ? `${base} | 响应:${body}` : base;
 }

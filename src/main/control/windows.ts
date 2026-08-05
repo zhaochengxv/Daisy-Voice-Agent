@@ -98,29 +98,92 @@ export function progIdToBrowserName(progId: string): string {  const map: Record
 }
 
 export async function openApplication(name: string): Promise<string> {
-  try {
-    const isBrowserKeyword = ["browser", "默认浏览器", "浏览器", "default_browser", "default browser"].includes(name.trim().toLowerCase());
+  const isBrowserKeyword = ["browser", "默认浏览器", "浏览器", "default_browser", "default browser"].includes(name.trim().toLowerCase());
 
-    if (isBrowserKeyword) {
-      const progId = await getDefaultBrowserProgId();
-      const browserName = progId ? progIdToBrowserName(progId) : "Microsoft Edge";
-      const result = await runPowerShell(`Start-Process $env:DAISY_ARG0`, { args: [browserName] });
-      log(`windows.openApplication: opened default browser (${browserName}): ${result}`);
-      return `已打开默认浏览器（${browserName}）`;
+  let progId = "";
+  if (isBrowserKeyword) {
+    try {
+      progId = await getDefaultBrowserProgId();
+    } catch {
+      /* keep empty */
     }
-
-    // Start-Process 按应用名启动（会搜索 PATH / 开始菜单注册），失败回退 AppsFolder
-    const script = `
-$ErrorActionPreference = 'SilentlyContinue'
-Start-Process -FilePath $env:DAISY_ARG0
-if (-not $?) {
-    Start-Process "shell:AppsFolder\\$env:DAISY_ARG0"
-}`;
-    await runPowerShell(script, { args: [name] });
-    return `已打开 ${name}`;
-  } catch (error) {
-    return `无法打开 ${name}，请检查应用名称是否正确`;
   }
+
+  // 解析真实 exe 路径后再启动，fire-and-forget（Start-Process 立即返回）。
+  // 原实现把显示名（如 "Microsoft Edge"）直接当 FilePath，Start-Process 必失败，
+  // 且失败静默返回 "已打开" → 路由器视为 handled → LLM 反复重试（真机日志
+  // 09:12:39-09:13:30 的 runPowerShell failed 循环）。这里解析失败则抛错，
+  // 由调用方按 handled:false 处理，让 LLM 落回 chat 而不是空转重试。
+  const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$name = $env:DAISY_ARG0
+$isBrowser = $env:DAISY_ARG1 -eq '1'
+$progId = $env:DAISY_ARG2
+$exe = ''
+
+function Get-AppPath($appName) {
+    $ap = Get-ItemProperty "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\$appName.exe" -ErrorAction SilentlyContinue
+    if ($ap -and $ap.'(default)') { return $ap.'(default)' }
+    $ap = Get-ItemProperty "Registry::HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\$appName.exe" -ErrorAction SilentlyContinue
+    if ($ap -and $ap.'(default)') { return $ap.'(default)' }
+    return $null
+}
+
+function Get-LnkPath($appName) {
+    $roots = @("$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs", "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs")
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        $lnk = Get-ChildItem -Path $root -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
+            Where-Object { $_.BaseName -ieq $appName } | Select-Object -First 1
+        if ($lnk) {
+            $sh = New-Object -ComObject WScript.Shell
+            $target = $sh.CreateShortcut($lnk.FullName).TargetPath
+            if ($target -and (Test-Path $target)) { return $target }
+        }
+    }
+    return $null
+}
+
+if ($isBrowser -and $progId) {
+    $regCmd = (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\\$progId\\shell\\open\\command" -ErrorAction SilentlyContinue).'(default)'
+    if ($regCmd) {
+        $m = [regex]::Match($regCmd, '"([^"]+\\.exe)"')
+        if (-not $m.Success) { $m = [regex]::Match($regCmd, '([A-Za-z]:\\\\[^"]*\\.exe)') }
+        if ($m.Success) { $exe = $m.Groups[1].Value }
+    }
+    if (-not $exe) {
+        foreach ($cand in @('chrome','msedge','firefox','opera','brave')) {
+            $exe = Get-AppPath $cand
+            if ($exe) { break }
+        }
+    }
+} else {
+    if ($name -match '\\.exe$' -or $name -match '\\\\') {
+        if (Test-Path $name) { $exe = $name }
+    } else {
+        $exe = Get-AppPath $name
+    }
+    if (-not $exe) { $exe = Get-LnkPath $name }
+}
+
+if ($exe) {
+    Start-Process -FilePath $exe
+    Write-Output ("OK:" + $exe)
+} elseif ($name -match '^[A-Za-z0-9._-]+$') {
+    # PATH 上的裸命令（notepad/mspaint 等）
+    Start-Process -FilePath $name
+    if ($?) { Write-Output ("OK:" + $name) }
+} else {
+    Write-Output 'FAIL:EXE_NOT_FOUND'
+}`;
+
+  const result = await runPowerShell(script, { args: [name, isBrowserKeyword ? "1" : "0", progId] });
+  if (result.startsWith("OK:")) {
+    log(`windows.openApplication: launched ${name} -> ${result.slice(3)}`);
+    return isBrowserKeyword ? "已打开默认浏览器" : `已打开 ${name}`;
+  }
+  log(`windows.openApplication: failed to resolve exe for "${name}" (progId=${progId})`);
+  throw new Error(`无法定位 ${name} 的可执行文件`);
 }
 
 export async function quitApplication(name: string): Promise<string> {

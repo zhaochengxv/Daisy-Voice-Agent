@@ -123,6 +123,7 @@ const canvas = document.getElementById("orbCanvas");
 const ctx = canvas.getContext("2d");
 const orbContainer = document.getElementById("orbContainer");
 const asrTextEl = document.getElementById("asrText");
+const llmOutputEl = document.getElementById("llmOutput");
 
 function resizeCanvas() {
   dpr = Math.min(window.devicePixelRatio || 1, 2.0);
@@ -183,6 +184,36 @@ diriAPI.onAsrError((message) => {
   setAsrText(message || "");
 });
 
+// ── LLM 回答滚动输出区 ──
+// 主进程把流式增量推到悬浮球右侧；渲染端负责清洗（剥离双通道标签/JSON 外壳）并
+// 自动滚动到底部。每次会话展示 orb 时清空，新一轮回答从空开始。
+let llmBuffer = "";
+function sanitizeDisplay(chunk) {
+  return String(chunk || "")
+    .replace(/<display>[\s\S]*?<\/display>/gi, "")
+    .replace(/<\/?(?:display|speech)>/gi, "")
+    .replace(/\{"display":\s*"([\s\S]*?)"\s*,\s*"speech":\s*"([\s\S]*?)"\}/gi, "$1")
+    .trim();
+}
+function setLlmOutput(text, visible) {
+  if (!llmOutputEl) return;
+  llmOutputEl.textContent = text;
+  llmOutputEl.classList.toggle("hidden", !visible);
+  llmOutputEl.scrollTop = llmOutputEl.scrollHeight;
+}
+diriAPI.onLlmStream((chunk) => {
+  const clean = sanitizeDisplay(chunk);
+  if (!clean) return;
+  llmBuffer += clean;
+  setLlmOutput(llmBuffer, true);
+});
+diriAPI.onLlmDone(() => {
+  // 流式结束后保持展示；onShowWindow 会在下一轮清空
+});
+diriAPI.onLlmError((message) => {
+  setLlmOutput("出错了：" + message, true);
+});
+
 diriAPI.onShowWindow(() => {
   visible = true;
   wakeScale = 1.0;
@@ -191,6 +222,10 @@ diriAPI.onShowWindow(() => {
   wakeShrinkTimer = setTimeout(() => {
     targetWakeScale = 90 / 120;
   }, 1000);
+
+  // 新一轮会话：清空上一轮 LLM 输出，回答从空白开始滚动
+  llmBuffer = "";
+  setLlmOutput("", false);
 
   if (!isLoopRunning) {
     isLoopRunning = true;
@@ -203,6 +238,8 @@ diriAPI.onHideWindow(() => {
   visible = false;
   if (wakeShrinkTimer) { clearTimeout(wakeShrinkTimer); wakeShrinkTimer = null; }
   setAsrText("");
+  llmBuffer = "";
+  setLlmOutput("", false);
 });
 
 diriAPI.onSetDocked((docked) => {
@@ -550,7 +587,8 @@ if (diriAPI.platform === "darwin") {
   window.addEventListener("mousemove", (e) => {
     const overOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
     const overText = asrTextEl && !asrTextEl.classList.contains("hidden") && isPointInElement(e.clientX, e.clientY, asrTextEl);
-    const isOverInteractive = overOrb || overText;
+    const overLlm = llmOutputEl && !llmOutputEl.classList.contains("hidden") && isPointInElement(e.clientX, e.clientY, llmOutputEl);
+    const isOverInteractive = overOrb || overText || overLlm;
     if (isOverInteractive !== isMouseOverInteractiveElement) {
       isMouseOverInteractiveElement = isOverInteractive;
       diriAPI.setIgnoreMouse(!isMouseOverInteractiveElement);
@@ -595,12 +633,23 @@ function isPointInElement(x, y, el) {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-// A click while Daisy is delivering a final answer only mutes that answer's
-// speech. When idle, clicking opens the settings window.
-window.addEventListener("click", () => {
+// 点击交互：
+// - 说话中（speaking）：点击任意位置静音当前回答。
+// - 空闲/思考/错误：点击 orb → 切换录音（开/关一轮语音会话）；
+//   点击文本区 → 打开设置窗口。文本区承载 LLM 输出，避免与录音入口冲突。
+window.addEventListener("click", (e) => {
   if (dragMoved) return; // 拖动后不当作点击
   if (currentState === "speaking") {
     diriAPI.muteCurrentTts();
+    return;
+  }
+  const isOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
+  if (isOrb) {
+    if (currentState === "listening") {
+      diriAPI.stopRecording();
+    } else {
+      diriAPI.startRecording();
+    }
   } else {
     diriAPI.openSettings();
   }

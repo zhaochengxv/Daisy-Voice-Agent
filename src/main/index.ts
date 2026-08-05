@@ -843,6 +843,8 @@ function handleLLMRequest(text: string): void {
 
   llmClient.on("stream", (chunk) => {
     if (sessionId !== currentSessionId) return;
+    // 悬浮球 LLM 输出区实时滚动（渲染端负责剥离双通道标签/JSON 外壳）
+    sendToFloatWindow(IPC_CHANNELS.LLM_STREAM, chunk);
     streamTts.feed(chunk, ttsPipeline);
   });
 
@@ -897,14 +899,19 @@ function handleLLMRequest(text: string): void {
     playSound("Tink");
     // Stop any active TTS confirmation/acknowledgment speech first, ensuring isSpeaking is false
     stopSpeaking();
+    // 保留多轮上下文：原实现 reset() 会清空全部历史，导致每轮静默命令
+    // （开应用/音量/写文件等）之后下一轮对话完全失忆。改回写客户端累计的会话。
+    if (llmClient) {
+      conversation.setMessages(llmClient.getConversation());
+    }
     updateState("idle");
     startAutoHideTimer();
-    conversationManager?.reset();
   });
 
   llmClient.on("done", ({ display: displayText }: DualChannel) => {
     if (sessionId !== currentSessionId) return;
     log(`LLM done, display length: ${displayText.length}`);
+    sendToFloatWindow(IPC_CHANNELS.LLM_DONE);
     if (llmClient) {
       conversation.setMessages(llmClient.getConversation());
     } else {
@@ -970,6 +977,7 @@ function handleLLMRequest(text: string): void {
   llmClient.on("error", (message) => {
     if (sessionId !== currentSessionId) return;
     logError("LLM error", message);
+    sendToFloatWindow(IPC_CHANNELS.LLM_ERROR, message);
     stopSpeaking();
     isSessionActive = false;
     wasWokenByVoice = false; // 对话中断，重置语音轮询模式，避免下次 allDone 误回听

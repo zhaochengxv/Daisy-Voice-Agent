@@ -31,18 +31,38 @@ const SPEECH_START_MS = 0; // Trigger on first loud frame
 
 const WAKE_WORD_PATTERNS: RegExp[] = [
   // 1. Chinese prefix + Chinese Daisy (e.g. 嘿黛西, 嘿代茜)
-  /[嘿嗨黑喂][,\s]*[呆戴代带袋大达][西茜希溪喜细]/,
+  /[嘿嗨黑喂][,\s]*[呆戴代带袋大达黛][西茜希溪喜细]/,
   
   // 2. English prefix + English Daisy (e.g. hey daisy, hi daisy, hello daisy)
-  /\b(hey|hi|hello|okay|ok)[,\s]*(daisy|daysi|dayzi|deisy|deizy)\b/i,
+  /\b(hey|hi|hello|okay|ok)[,\s]*(daisy|daysi|dayzi|deisy|deizy|daizy|dazy|dazie|dasi)\b/i,
   
   // 3. English prefix + Chinese Daisy (e.g. hey 黛西)
-  /\b(hey|hi|hello|okay|ok)[,\s]*[呆戴代带袋大达][西茜希溪喜细]/i,
+  /\b(hey|hi|hello|okay|ok)[,\s]*[呆戴代带袋大达黛][西茜希溪喜细]/i,
   
   // 4. Chinese prefix + English Daisy (e.g. 嘿 daisy)
-  /[嘿嗨黑喂][,\s]*(daisy|daysi|dayzi|deisy|deizy)/i,
+  /[嘿嗨黑喂][,\s]*(daisy|daysi|dayzi|deisy|deizy|daizy|dazy|dazie)/i,
+
+  // 5. 假名转写：whisper.cpp base 模型把 "Hey Daisy" 误识别为日文假名，
+  //    真机实测输出 "かいで"（ka-i-de），不覆盖则语音唤醒永远不触发。
+  /[かカ](?:[いぃイ]|[いいー])[でデ][いぃイー]?/,
+  /[ひハ][いぃイ][ー]?[でデ][いぃイ][ー]?[じジ][ー]?/,   // ハイデイジー / ヒイデイジー
+  /[へヘ][いぃイ][でデ][いぃイ][じジ]/,                    // ヘイデイジ family
+
+  // 6. 拼音近似（"hei dai zi" 一类轻声朗读）
+  /[hx][ae]i\s*(?:[d]?)[ae]i\s*(?:zi|si)/i,
 ];
 type MonitorState = "idle" | "recording" | "paused";
+
+/** 纯函数：文本是否命中唤醒词（含 whisper.cpp 方言/假名误识别）。供单测与内部共用。 */
+export function isWakeWordMatch(text: string): boolean {
+  const normalized = text.replace(/[\s,，。！!？?、~""''']/g, "");
+  for (const pattern of WAKE_WORD_PATTERNS) {
+    if (pattern.test(normalized) || pattern.test(text)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export class WakeWordMonitor extends EventEmitter {
   private state: MonitorState = "idle";
@@ -237,9 +257,8 @@ export class WakeWordMonitor extends EventEmitter {
   }
 
   private containsWakeWord(text: string): boolean {
-    const normalized = text.replace(/[\s,，。！!？?、~""''']/g, "");
     for (const pattern of WAKE_WORD_PATTERNS) {
-      if (pattern.test(normalized) || pattern.test(text)) {
+      if (pattern.test(text) || pattern.test(text.replace(/[\s,，。！!？?、~""''']/g, ""))) {
         log(`WakeWordMonitor: matched pattern ${pattern.source}`);
         return true;
       }
@@ -270,6 +289,8 @@ export class VAD {
   private speechCounter = 0;
   private silenceCounter = 0;
   private frameCount = 0;
+  private lowEnergyStreak = 0;
+  private silentLogged = false;
 
   constructor(silenceEndMs = 2000) {
     this.silenceEndMs = silenceEndMs;
@@ -279,13 +300,26 @@ export class VAD {
     const energy = this.calculateEnergy(buffer);
     const chunkMs = ((buffer.length / 2) / SAMPLE_RATE) * 1000;
 
+    // 真机排障诊断：麦克风电平持续过低（几乎无帧超过 0.001）说明音频根本没进来
+    // 或增益太低，VAD 永不判起音。只在首次进入静默态时记一次，避免刷屏。
+    if (energy < 0.001) {
+      this.lowEnergyStreak++;
+      if (this.lowEnergyStreak > 100 && !this.silentLogged) {
+        this.silentLogged = true;
+        log(`VAD: input appears silent (${this.lowEnergyStreak} frames < 0.001). Check mic gain/permission; wake word will not trigger without real audio.`);
+      }
+    } else {
+      this.lowEnergyStreak = 0;
+    }
+
     // Adaptive noise floor: only update when NOT in speech
     if (!this.inSpeech) {
       // Slowly adapt to background noise
       this.noiseFloor = this.noiseFloor * 0.97 + energy * 0.03;
     }
-    // Threshold is 2x above noise floor, minimum 0.02
-    const threshold = Math.max(this.noiseFloor * 2, 0.02);
+    // Threshold is 2x above noise floor, minimum 0.012（唤醒匹配由 whisper 兜底，
+    // 阈值放低可让轻声"嘿黛西"越过门限；仅唤醒词监控使用，不影响快捷键按住说话）
+    const threshold = Math.max(this.noiseFloor * 2, 0.012);
     const isLoud = energy > threshold;
 
     this.frameCount++;
@@ -326,6 +360,8 @@ export class VAD {
     this.speechCounter = 0;
     this.silenceCounter = 0;
     this.noiseFloor = 0.005;
+    this.lowEnergyStreak = 0;
+    this.silentLogged = false;
   }
 
   private calculateEnergy(buffer: Buffer): number {

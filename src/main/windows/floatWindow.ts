@@ -6,9 +6,11 @@ import { isWindows } from "../utils/windowsShell";
 import { getSettingsWindow, createSettingsWindow } from "./settingsWindow";
 
 const ORB_SIZE = 92;
-// 悬浮球右侧实时语音文本显示区宽度。窗口整体加宽，但 orb 仍按 ORB_SIZE
-// 居中定位，文本区位于 orb 右侧。
-const ASR_TEXT_WIDTH = 280;
+// 三区布局：左 orb（点击录音开关）+ 中 ASR 实时文本 + 右 LLM 滚动输出。
+// 窗口整体加宽，orb 仍按 ORB_SIZE 定位在左侧，两个文本区依次排开。
+const ASR_TEXT_WIDTH = 220;
+const LLM_OUTPUT_WIDTH = 280;
+const PANEL_HEIGHT = 140;
 
 let floatWindow: BrowserWindow | null = null;
 
@@ -22,12 +24,14 @@ export function createFloatWindow(): BrowserWindow {
   }
 
   const { x: screenX, y: screenY, width: screenWidth } = screen.getPrimaryDisplay().bounds;
-  const x = screenX + Math.round((screenWidth - ORB_SIZE) / 2);
-  const y = screenY - 20;
+  const x = screenX + Math.round((screenWidth - ORB_SIZE - ASR_TEXT_WIDTH - LLM_OUTPUT_WIDTH) / 2);
+  // 原实现 y = screenY - 20 把窗口顶出屏幕上缘 20px：透明无边框窗口的这部分
+  // 既不可见又拦截不到点击（orb 顶部触摸区失效）。改为贴屏幕上缘下压 8px。
+  const y = screenY + 8;
 
   floatWindow = new BrowserWindow({
-    width: ORB_SIZE + ASR_TEXT_WIDTH,
-    height: ORB_SIZE,
+    width: ORB_SIZE + ASR_TEXT_WIDTH + LLM_OUTPUT_WIDTH,
+    height: PANEL_HEIGHT,
     x,
     y,
     frame: false,
@@ -108,8 +112,8 @@ export function showFloatWindow(): void {
   // 2. Reposition it only if display boundary changed, to avoid blocking display server queries
   try {
     const { x: screenX, y: screenY, width: screenWidth } = screen.getPrimaryDisplay().bounds;
-    const x = screenX + Math.round((screenWidth - ORB_SIZE) / 2);
-    const y = screenY - 20;
+    const x = screenX + Math.round((screenWidth - ORB_SIZE - ASR_TEXT_WIDTH - LLM_OUTPUT_WIDTH) / 2);
+    const y = screenY + 8;
     const currentPos = floatWindow.getPosition();
     if (currentPos[0] !== x || currentPos[1] !== y) {
       floatWindow.setPosition(x, y);

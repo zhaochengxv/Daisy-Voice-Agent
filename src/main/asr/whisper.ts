@@ -51,6 +51,9 @@ export class WhisperAsrSession extends EventEmitter {
     this.preRollBuffer = [];
     this.totalBytes = 0;
     this.vad.reset();
+    // 自愈：上一轮 processAudio 若中途异常（写盘失败等）processing 会残留 true，
+    // 导致后续 feedPcm 全部被吞 → 长按永远 0 字节。新会话无条件复位。
+    this.processing = false;
     log("WhisperAsrSession: started local Whisper command recognition");
   }
 
@@ -67,6 +70,25 @@ export class WhisperAsrSession extends EventEmitter {
 
   feedPcm(buffer: Buffer): void {
     if (!this.sessionActive || this.processing) return;
+
+    // Hold-to-talk（快捷键按住说话，autoStopOnSilence=false）：
+    // 按下即采集，不依赖 VAD speechStart 判起音。真机低音量（energy 0.0002~0.0006
+    // vs threshold 0.02）导致 speechStart 永不触发 → audioBuffer 恒空 → 0 字节空转写。
+    // 会话由松键/超时结束，VAD 静音门控在这里不适用。
+    if (!this.autoStopOnSilence) {
+      if (this.audioBuffer.length === 0) {
+        this.emit("partial", "...");
+      }
+      this.audioBuffer.push(buffer);
+      this.totalBytes += buffer.length;
+      if (this.totalBytes >= MAX_AUDIO_BYTES) {
+        log("WhisperAsrSession: max length reached, transcribing...");
+        this.sessionActive = false;
+        this.preRollBuffer = [];
+        this.processAudio();
+      }
+      return;
+    }
 
     const vadEvent = this.vad.feed(buffer);
 
@@ -114,8 +136,17 @@ export class WhisperAsrSession extends EventEmitter {
     this.totalBytes = 0;
 
     const wavPath = path.join(TEMP_DIR, `cmd-${Date.now()}.wav`);
-    const wav = this.toWav(audioData);
-    fs.writeFileSync(wavPath, wav);
+    let wav: Buffer;
+    try {
+      // 写盘在 try 内：writeFileSync 抛错（临时目录不可写/磁盘满）时也会走
+      // finally 复位 processing，杜绝转写永久卡死（否则后续 feedPcm 全被吞）。
+      wav = this.toWav(audioData);
+      fs.writeFileSync(wavPath, wav);
+    } catch (error) {
+      log(`WhisperAsrSession: failed to write wav: ${error}`);
+      this.emit("error", "临时音频文件写入失败");
+      return;
+    }
 
     try {
       const modelError = validateWhisperModel();

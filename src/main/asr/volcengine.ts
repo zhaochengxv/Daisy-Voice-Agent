@@ -31,7 +31,7 @@ export function buildRequestHeaders(credentials: AsrCredentials) {
   };
 }
 
-export function buildFullClientRequest(sequence: number, sampleRate = 16000): Buffer {
+export function buildFullClientRequest(sequence: number, sampleRate = 16000, modelName = "bigmodel"): Buffer {
   const payload = {
     user: { uid: "diri" },
     audio: {
@@ -42,7 +42,9 @@ export function buildFullClientRequest(sequence: number, sampleRate = 16000): Bu
       channel: 1,
     },
     request: {
-      model_name: "bigmodel",
+      // model_name 必须与 wsUrl 路径末段集群一致（免费试用版 bigmodel，
+      // 正式版 bigmodel_async）。两者不匹配火山会返回 403。
+      model_name: modelName,
       enable_itn: true,
       enable_punc: true,
       enable_ddc: false,
