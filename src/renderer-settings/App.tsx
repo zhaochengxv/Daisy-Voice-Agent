@@ -43,6 +43,9 @@ interface SettingsState {
   VISUAL_API_KEY: string;
   VISUAL_BASE_URL: string;
   VISUAL_MODEL: string;
+  VISUAL_BACKUP_API_KEY: string;
+  VISUAL_BACKUP_BASE_URL: string;
+  VISUAL_BACKUP_MODEL: string;
 }
 
 interface ChatEntry {
@@ -70,6 +73,9 @@ const DEFAULT_SETTINGS: SettingsState = {
   VISUAL_API_KEY: "",
   VISUAL_BASE_URL: "https://open.bigmodel.cn/api/paas/v4",
   VISUAL_MODEL: "glm-4.6v-flash",
+  VISUAL_BACKUP_API_KEY: "",
+  VISUAL_BACKUP_BASE_URL: "https://api.siliconflow.cn/v1",
+  VISUAL_BACKUP_MODEL: "Qwen/Qwen2.5-VL-7B-Instruct",
 };
 
 function rateToStr(n: number): string {
@@ -159,6 +165,9 @@ export default function App() {
         if (cfg.VISUAL_API_KEY !== undefined) merged.VISUAL_API_KEY = cfg.VISUAL_API_KEY;
         if (cfg.VISUAL_BASE_URL !== undefined) merged.VISUAL_BASE_URL = cfg.VISUAL_BASE_URL;
         if (cfg.VISUAL_MODEL !== undefined) merged.VISUAL_MODEL = cfg.VISUAL_MODEL;
+        if (cfg.VISUAL_BACKUP_API_KEY !== undefined) merged.VISUAL_BACKUP_API_KEY = cfg.VISUAL_BACKUP_API_KEY;
+        if (cfg.VISUAL_BACKUP_BASE_URL !== undefined) merged.VISUAL_BACKUP_BASE_URL = cfg.VISUAL_BACKUP_BASE_URL;
+        if (cfg.VISUAL_BACKUP_MODEL !== undefined) merged.VISUAL_BACKUP_MODEL = cfg.VISUAL_BACKUP_MODEL;
         try {
           merged.AUTO_LAUNCH = await window.diriAPI.getAutoLaunch();
         } catch {}
@@ -317,6 +326,9 @@ export default function App() {
       VISUAL_API_KEY: settings.VISUAL_API_KEY.trim(),
       VISUAL_BASE_URL: settings.VISUAL_BASE_URL.trim(),
       VISUAL_MODEL: settings.VISUAL_MODEL.trim(),
+      VISUAL_BACKUP_API_KEY: settings.VISUAL_BACKUP_API_KEY.trim(),
+      VISUAL_BACKUP_BASE_URL: settings.VISUAL_BACKUP_BASE_URL.trim(),
+      VISUAL_BACKUP_MODEL: settings.VISUAL_BACKUP_MODEL.trim(),
     };
     try {
       const ok = await window.diriAPI.updateConfig(payload);
@@ -925,6 +937,37 @@ export default function App() {
                         默认智谱 GLM-4.6V-Flash（官方免费，视觉推理 + 128K 上下文，效果超过 Qwen3-VL-8B）。
                         也可换豆包：接口地址填 <code className="text-slate-500">https://ark.cn-beijing.volces.com/api/v3</code>、模型填 <code className="text-slate-500">doubao-seed-2-1-turbo-260628</code>、API Key 用火山方舟密钥（约 3 元/百万输入 token，识图一次约 1 分钱。注意旧版 doubao-seed-1-6-vision 已下线不可用）。
                         视频分析会抽取 3~5 个关键帧后一并识别。
+                      </p>
+                    </div>
+                    <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-5 mt-5">
+                      <div>
+                        <h3 className="font-display font-semibold text-[15px] tracking-tight text-slate-800">备用视觉模型（可选，推荐）</h3>
+                        <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                          免费模型高峰期限流（智谱返回「拥挤/繁忙」，官方错误码 1302/1305）时，Daisy 会自动重试并降级到备用供应商，保证看图不断档。
+                          推荐硅基流动（cloud.siliconflow.cn，注册送额度，无需实名即可用）：填入硅基流动 API Key 即可，接口地址与模型已默认填好。
+                        </p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[12px] font-semibold text-slate-500 ml-1">备用 API Key（硅基流动，cloud.siliconflow.cn 创建）</label>
+                        <input type="password" value={settings.VISUAL_BACKUP_API_KEY}
+                          onChange={(e) => handleInputChange("VISUAL_BACKUP_API_KEY", e.target.value)}
+                          placeholder="sk-...（硅基流动 API Key）" className="glass-input" autoComplete="off" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[12px] font-semibold text-slate-500 ml-1">备用接口地址</label>
+                        <input value={settings.VISUAL_BACKUP_BASE_URL}
+                          onChange={(e) => handleInputChange("VISUAL_BACKUP_BASE_URL", e.target.value)}
+                          placeholder="https://api.siliconflow.cn/v1" className="glass-input" autoComplete="off" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[12px] font-semibold text-slate-500 ml-1">备用模型名称</label>
+                        <input value={settings.VISUAL_BACKUP_MODEL}
+                          onChange={(e) => handleInputChange("VISUAL_BACKUP_MODEL", e.target.value)}
+                          placeholder="Qwen/Qwen2.5-VL-7B-Instruct" className="glass-input" autoComplete="off" />
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        硅基流动备选模型：<code className="text-slate-500">Qwen/Qwen3-VL-8B-Instruct</code>（新一代，效果更佳）或 <code className="text-slate-500">Qwen/Qwen2.5-VL-7B-Instruct</code>。
+                        也可填其他任意 OpenAI 兼容视觉模型。
                       </p>
                     </div>
                   </div>

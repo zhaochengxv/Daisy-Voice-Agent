@@ -88,6 +88,12 @@ export const config = {
     baseUrl: process.env.VISUAL_BASE_URL || "https://open.bigmodel.cn/api/paas/v4",
     model: process.env.VISUAL_MODEL || "glm-4.6v-flash",
     maxTokens: process.env.VISUAL_MAX_TOKENS || "512",
+    // 备用视觉供应商（可选）：免费模型高峰期限流时自动降级切换，保证识别可用。
+    // 推荐硅基流动（cloud.siliconflow.cn，注册送额度）：baseUrl=https://api.siliconflow.cn/v1，
+    // model=Qwen/Qwen2.5-VL-7B-Instruct（或 Qwen/Qwen3-VL-8B-Instruct）。
+    backupApiKey: process.env.VISUAL_BACKUP_API_KEY || "",
+    backupBaseUrl: process.env.VISUAL_BACKUP_BASE_URL || "https://api.siliconflow.cn/v1",
+    backupModel: process.env.VISUAL_BACKUP_MODEL || "Qwen/Qwen2.5-VL-7B-Instruct",
   },
   tts: {
     voice: process.env.EDGE_TTS_VOICE || "zh-CN-XiaoxiaoNeural",

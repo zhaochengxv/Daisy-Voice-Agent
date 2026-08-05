@@ -26,6 +26,53 @@ export function formatImageUrl(baseUrl: string, mime: string, b64: string): stri
   return /bigmodel\.cn/i.test(baseUrl) ? b64 : `data:${mime};base64,${b64}`;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** 视觉供应商：首选 + 可选备用（免费模型高峰期限流时自动降级） */
+interface VisionProvider {
+  name: string;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  maxTokens: string;
+}
+
+function listProviders(): VisionProvider[] {
+  const providers: VisionProvider[] = [];
+  if (config.vision.apiKey) {
+    providers.push({
+      name: "首选",
+      apiKey: config.vision.apiKey,
+      baseUrl: config.vision.baseUrl || "https://open.bigmodel.cn/api/paas/v4",
+      model: config.vision.model || "glm-4.6v-flash",
+      maxTokens: config.vision.maxTokens || "512",
+    });
+  }
+  if (config.vision.backupApiKey) {
+    providers.push({
+      name: "备用",
+      apiKey: config.vision.backupApiKey,
+      baseUrl: config.vision.backupBaseUrl || "https://api.siliconflow.cn/v1",
+      model: config.vision.backupModel || "Qwen/Qwen2.5-VL-7B-Instruct",
+      maxTokens: config.vision.maxTokens || "512",
+    });
+  }
+  return providers;
+}
+
+/** 是否属于「拥挤/过载/限流」类可重试错误（智谱免费模型高峰期的典型形态） */
+export function isRetryableVisionError(status: number, body: string): boolean {
+  const low = body.toLowerCase();
+  return (
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    /1302|1305|busy|overload|too many|rate\s*limit|拥挤|繁忙|过载|请求过多|服务繁忙/.test(low)
+  );
+}
+
 function getFfmpegPath(): string {
   if (!ffmpegStaticPath) return "ffmpeg";
   if (ffmpegStaticPath.includes(".asar")) {
@@ -37,7 +84,7 @@ function getFfmpegPath(): string {
 
 /** 视觉模型是否已配置（未配置时工具给出引导而非报错） */
 export function isVisionConfigured(): boolean {
-  return Boolean(config.vision.apiKey);
+  return Boolean(config.vision.apiKey || config.vision.backupApiKey);
 }
 
 function resolveImagePath(input: string): string {
@@ -52,39 +99,26 @@ function resolveImagePath(input: string): string {
   return abs;
 }
 
-async function callVisionModel(imagePaths: string[], question: string): Promise<string> {
-  if (!isVisionConfigured()) {
-    throw new Error(
-      "视觉模型未配置：请在设置页「视觉理解」填入 API Key（推荐免费方案：智谱 bigmodel.cn 的 GLM-4.6V-Flash，注册即可用）"
-    );
-  }
-  const baseUrl = (config.vision.baseUrl || "https://open.bigmodel.cn/api/paas/v4").replace(/\/+$/, "");
-  const content: Array<Record<string, unknown>> = [
-    { type: "text", text: question || "请详细描述这张图片的内容。" },
-  ];
-  for (const imgPath of imagePaths) {
-    const mime = MIME_BY_EXT[path.extname(imgPath).toLowerCase()] || "image/png";
-    const b64 = fs.readFileSync(imgPath).toString("base64");
-    content.push({ type: "image_url", image_url: { url: formatImageUrl(baseUrl, mime, b64) } });
-  }
-
+/** 单次请求单供应商，返回解析后的正文 */
+async function requestOnce(provider: VisionProvider, content: Array<Record<string, unknown>>): Promise<string> {
+  const baseUrl = provider.baseUrl.replace(/\/+$/, "");
   const resp = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${config.vision.apiKey}`,
+      Authorization: `Bearer ${provider.apiKey}`,
     },
     body: JSON.stringify({
-      model: config.vision.model,
+      model: provider.model,
       messages: [{ role: "user", content }],
-      max_tokens: Number(config.vision.maxTokens || 512),
+      max_tokens: Number(provider.maxTokens || 512),
     }),
     signal: AbortSignal.timeout(60000),
   });
 
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    throw new Error(`视觉模型请求失败(HTTP ${resp.status})：${body.slice(0, 300)}`);
+    throw { status: resp.status, body };
   }
   const data = (await resp.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
@@ -92,6 +126,55 @@ async function callVisionModel(imagePaths: string[], question: string): Promise<
   const contentStr = data.choices?.[0]?.message?.content?.trim() || "";
   if (!contentStr) throw new Error("视觉模型返回为空");
   return contentStr;
+}
+
+/** 拥挤重试 + 双供应商自动降级：免费模型高峰期 429/503 时自动切备用供应商 */
+async function callVisionModel(imagePaths: string[], question: string): Promise<string> {
+  const providers = listProviders();
+  if (providers.length === 0) {
+    throw new Error(
+      "视觉模型未配置：请在设置页「视觉理解」填入 API Key（推荐免费方案：智谱 bigmodel.cn 的 GLM-4.6V-Flash，注册即可用）"
+    );
+  }
+
+  const content: Array<Record<string, unknown>> = [
+    { type: "text", text: question || "请详细描述这张图片的内容。" },
+  ];
+  for (const imgPath of imagePaths) {
+    const mime = MIME_BY_EXT[path.extname(imgPath).toLowerCase()] || "image/png";
+    const b64 = fs.readFileSync(imgPath).toString("base64");
+    content.push({ type: "image_url", image_url: { url: formatImageUrl(providers[0].baseUrl, mime, b64) } });
+  }
+
+  let lastErr: unknown;
+  for (const provider of providers) {
+    const maxAttempts = provider === providers[0] ? 3 : 2; // 首选多试，备用兜底试 2 次
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const text = await requestOnce(provider, content);
+        if (provider !== providers[0]) log(`vision: 首选拥挤，已降级到备用供应商 ${provider.name}(${provider.model})`);
+        return text;
+      } catch (err) {
+        lastErr = err;
+        const { status = 0, body = "" } = err as { status?: number; body?: string };
+        const retryable = isRetryableVisionError(status, body);
+        if (!retryable) break; // 非拥挤类错误（如 key 无效/模型不存在），直接切下一个供应商
+        if (attempt < maxAttempts) {
+          await sleep(700 * attempt); // 指数退避，等限流窗口过去
+          continue;
+        }
+        log(`vision: ${provider.name}供应商(${provider.model}) 拥挤重试 ${maxAttempts} 次后仍失败`);
+      }
+    }
+    // 当前供应商失败，落到下一个
+  }
+
+  const e = lastErr as { status?: number; body?: string };
+  const detail = e?.body ? e.body.slice(0, 300) : String(lastErr);
+  const hasBackup = providers.length > 1;
+  throw new Error(
+    `视觉模型请求失败${hasBackup ? "（首选与备用均不可用）" : ""}(HTTP ${e?.status ?? "?"})：${detail}`
+  );
 }
 
 /** 图片理解：读取本地图片 → 视觉模型 → 返回描述/回答 */

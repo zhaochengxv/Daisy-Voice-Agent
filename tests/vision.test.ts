@@ -8,6 +8,9 @@ vi.mock("../src/main/config/env", () => ({
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",
       model: "glm-4.6v-flash",
       maxTokens: "512",
+      backupApiKey: "",
+      backupBaseUrl: "https://api.siliconflow.cn/v1",
+      backupModel: "Qwen/Qwen2.5-VL-7B-Instruct",
     },
   },
   log: vi.fn(),
@@ -17,7 +20,7 @@ const os = await import("node:os");
 const fs = await import("node:fs");
 const path = await import("node:path");
 
-import { isVisionConfigured, analyzeImage, formatImageUrl } from "../src/main/vision/index";
+import { isVisionConfigured, analyzeImage, formatImageUrl, isRetryableVisionError } from "../src/main/vision/index";
 
 describe("视觉理解工具（v1.5.13 默认智谱 GLM-4.6V-Flash）", () => {
   it("智谱平台传裸 base64，豆包等其他平台传标准 data URI", () => {
@@ -46,5 +49,16 @@ describe("视觉理解工具（v1.5.13 默认智谱 GLM-4.6V-Flash）", () => {
 
   it("不存在的图片路径给出明确错误", async () => {
     await expect(analyzeImage("/no/such/file-xyz.png")).rejects.toThrow(/文件不存在/);
+  });
+
+  it("拥挤/过载/限流类错误判定为可重试", () => {
+    expect(isRetryableVisionError(429, "")).toBe(true);
+    expect(isRetryableVisionError(503, "")).toBe(true);
+    expect(isRetryableVisionError(504, "upstream timeout")).toBe(true);
+    expect(isRetryableVisionError(200, "1305 platform overload")).toBe(true);
+    expect(isRetryableVisionError(200, "1302 rate limit")).toBe(true);
+    expect(isRetryableVisionError(200, "当前请求繁忙，请稍后重试")).toBe(true);
+    expect(isRetryableVisionError(401, "invalid api key")).toBe(false);
+    expect(isRetryableVisionError(404, "model not found")).toBe(false);
   });
 });

@@ -1472,6 +1472,9 @@ function setupIpc(): void {
       VISUAL_API_KEY: config.vision.apiKey,
       VISUAL_BASE_URL: config.vision.baseUrl,
       VISUAL_MODEL: config.vision.model,
+      VISUAL_BACKUP_API_KEY: config.vision.backupApiKey,
+      VISUAL_BACKUP_BASE_URL: config.vision.backupBaseUrl,
+      VISUAL_BACKUP_MODEL: config.vision.backupModel,
     };
   });
 
@@ -1500,6 +1503,7 @@ function setupIpc(): void {
         "AUTO_LAUNCH",
         "AUDIO_INPUT_DEVICE",
         "VISUAL_API_KEY", "VISUAL_BASE_URL", "VISUAL_MODEL",
+        "VISUAL_BACKUP_API_KEY", "VISUAL_BACKUP_BASE_URL", "VISUAL_BACKUP_MODEL",
       ]);
 
       const existing: Record<string, string> = {};
@@ -1556,6 +1560,13 @@ function setupIpc(): void {
       if (cfg.VISUAL_API_KEY !== undefined) config.vision.apiKey = cfg.VISUAL_API_KEY;
       if (cfg.VISUAL_BASE_URL !== undefined && cfg.VISUAL_BASE_URL.trim()) config.vision.baseUrl = cfg.VISUAL_BASE_URL;
       if (cfg.VISUAL_MODEL !== undefined && cfg.VISUAL_MODEL.trim()) config.vision.model = cfg.VISUAL_MODEL;
+      if (cfg.VISUAL_BACKUP_API_KEY !== undefined) config.vision.backupApiKey = cfg.VISUAL_BACKUP_API_KEY;
+      if (cfg.VISUAL_BACKUP_BASE_URL !== undefined && cfg.VISUAL_BACKUP_BASE_URL.trim()) {
+        config.vision.backupBaseUrl = cfg.VISUAL_BACKUP_BASE_URL;
+      }
+      if (cfg.VISUAL_BACKUP_MODEL !== undefined && cfg.VISUAL_BACKUP_MODEL.trim()) {
+        config.vision.backupModel = cfg.VISUAL_BACKUP_MODEL;
+      }
       if (cfg.GLOBAL_SHORTCUT !== undefined && cfg.GLOBAL_SHORTCUT.trim()) {
         config.shortcut.globalShortcut = cfg.GLOBAL_SHORTCUT;
         globalShortcut?.updateShortcut(cfg.GLOBAL_SHORTCUT);
