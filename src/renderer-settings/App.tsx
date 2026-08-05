@@ -923,7 +923,7 @@ export default function App() {
                       </div>
                       <p className="text-[11px] text-slate-400 leading-relaxed">
                         默认智谱 GLM-4.6V-Flash（官方免费，视觉推理 + 128K 上下文，效果超过 Qwen3-VL-8B）。
-                        也可换豆包：接口地址填 <code className="text-slate-500">https://ark.cn-beijing.volces.com/api/v3</code>、模型填 <code className="text-slate-500">doubao-seed-1-6-vision-250815</code>、API Key 用火山方舟密钥（约 0.8 元/百万输入 token，识图一次不到 1 分钱）。
+                        也可换豆包：接口地址填 <code className="text-slate-500">https://ark.cn-beijing.volces.com/api/v3</code>、模型填 <code className="text-slate-500">doubao-seed-2-1-turbo-260628</code>、API Key 用火山方舟密钥（约 3 元/百万输入 token，识图一次约 1 分钱。注意旧版 doubao-seed-1-6-vision 已下线不可用）。
                         视频分析会抽取 3~5 个关键帧后一并识别。
                       </p>
                     </div>
