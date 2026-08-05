@@ -722,6 +722,16 @@ export default function App() {
                         高配电脑可选 <strong className="text-slate-600 font-semibold">Small</strong> 提升唤醒准确率。
                         切换后需重新下载并重启 Daisy 生效。
                       </p>
+                      <div className="rounded-[14px] bg-sky-50 border border-sky-200 px-4 py-3 text-[11px] leading-relaxed text-sky-700">
+                        <span className="font-semibold">高配 N 卡想用 GPU 加速？</span> 默认安装包是纯 CPU 版。
+                        从
+                        <a href="https://github.com/ggml-org/whisper.cpp/releases" target="_blank" rel="noopener noreferrer"
+                          className="text-sky-600 hover:text-sky-800 font-medium hover:underline"> whisper.cpp Releases </a>
+                        下载 <code className="text-sky-600 bg-sky-100 px-1 py-0.5 rounded">whisper-cublas-*-bin-x64.zip</code>，
+                        用其中 Release/ 的 whisper-server.exe、whisper-cli.exe 和全部 dll 覆盖安装目录
+                        <code className="text-sky-600 bg-sky-100 px-1 py-0.5 rounded">resources\app.asar.unpacked\assets\bin\</code>，
+                        重启后自动启用 GPU（检测到 ggml-cuda.dll 即生效）。低配/无 N 卡机器无需操作，保持 CPU 版即可。
+                      </div>
                       <div className="flex items-center justify-between">
                         <span className="text-[13px] font-semibold text-slate-700">模型状态</span>
                         {whisperModelStatus === "downloaded" ? (

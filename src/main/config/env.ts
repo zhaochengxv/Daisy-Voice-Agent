@@ -172,13 +172,20 @@ export function getWhisperServerThreads(): number {
 }
 
 /**
- * Windows 打包仅含 CPU 后端 DLL（ggml-cpu-*.dll）。whisper 默认 use_gpu=true，
- * 在无 GPU 后端时初始化仍走 GPU 路径，导致 ACCESS_VIOLATION (0xC0000005) 段错误
- * 反复崩溃，必须显式 -ng 禁 GPU。macOS 上保留默认（Apple Silicon Metal GPU 加速，
- * 强制 CPU 会显著拖慢推理），故 -ng 仅 Windows 生效。
+ * 决定 whisper 是否强制 CPU 推理（-ng）。
+ *
+ * Windows 默认打包为官方 CPU 版（仅 ggml-cpu-*.dll，无 ggml-cuda.dll）。
+ * 该构建下 use_gpu=true 会在 GPU 后端初始化路径触发 ACCESS_VIOLATION
+ * (0xC0000005) 段错误反复崩溃（v1.5.6 真机复现），必须 -ng。
+ *
+ * 高配 N 卡用户可手动部署官方 CUDA 版（whisper-cublas-*-bin-x64.zip）：
+ * 把 Release/ 下的 exe/dll 覆盖到 assets/bin。bin 目录出现 ggml-cuda.dll
+ * 时自动放行 GPU，无需改代码。macOS 保留默认（Metal GPU 加速），不判 -ng。
  */
 export function whisperNeedsNoGpu(): boolean {
-  return process.platform === "win32";
+  if (process.platform !== "win32") return false;
+  const binDir = path.dirname(getBundledBin("whisper-cli"));
+  return !fs.existsSync(path.join(binDir, "ggml-cuda.dll"));
 }
 
 export function expectedWhisperModelBytes(modelName: string): number {

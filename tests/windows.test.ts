@@ -164,3 +164,30 @@ describe("isWindows", () => {
     expect(isWindows()).toBe(process.platform === "win32");
   });
 });
+
+describe("whisperNeedsNoGpu", () => {
+  it("非 win32 平台恒为 false（macOS 保留 GPU）", async () => {
+    const { whisperNeedsNoGpu } = await import("../src/main/config/env");
+    // 用 Object.defineProperty 隔离平台，避免污染其他用例
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    try {
+      expect(whisperNeedsNoGpu()).toBe(false);
+    } finally {
+      Object.defineProperty(process, "platform", original);
+    }
+  });
+
+  it("win32 上无 ggml-cuda.dll 时强制 CPU（-ng）", async () => {
+    const { whisperNeedsNoGpu } = await import("../src/main/config/env");
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      // 沙箱环境不是 win32 真实打包，getBundledBin 会返回带 .exe 的 PATH 兜底路径，
+      // bin 目录不存在 ggml-cuda.dll → 应强制 CPU。
+      expect(whisperNeedsNoGpu()).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", original);
+    }
+  });
+});
