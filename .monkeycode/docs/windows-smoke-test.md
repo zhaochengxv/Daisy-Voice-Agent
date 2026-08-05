@@ -4,7 +4,7 @@
 
 ## 环境准备（Windows）
 
-1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy（当前版本 v1.5.8）。
+1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy（当前版本 v1.5.9）。
 2. 准备 `daisy.env`（火山 ASR + DeepSeek + Edge TTS 配置），与 macOS 同款。
 3. 唤醒词所需 `whisper-cli.exe` + `ggml-base.bin` 已由安装包注入/设置页下载（v1.5.6 起同时注入 `whisper-server.exe`）。
 
@@ -44,6 +44,24 @@
 | N 卡但驱动缺失 | 显示「需先安装 NVIDIA 显卡驱动」提示，不显示部署按钮 | ☐ |
 | 无 N 卡 / macOS | 显示「使用默认 CPU 版」提示，不显示部署按钮 | ☐ |
 | 部署中重复点击 | 第二次点击被拒绝（返回「下载进行中」），无并发冲突 | ☐ |
+
+## v1.5.9 真机回归专项（六项修复）
+
+> 背景：v1.5.8 真机日志（diri-main.log）暴露——长按快捷键 `stop() total audio: 0 bytes`（VAD 阈值 0.02 vs 实际轻声 energy 0.0002~0.0006，音频从未积累）、火山 ASR 403 三连、开应用 `runPowerShell failed` 循环（假成功文案让 LLM 空转重试）、悬浮球顶出屏幕、唤醒词 whisper.cpp 输出假名「かいで」、静默工具命令后会话失忆。
+
+| 场景 | 预期 | 通过 |
+|------|------|------|
+| 长按快捷键轻声说话 | 松手后 ASR 立即出文本（**不再 0 字节空转**）；日志 `total audio: <非0>` 且含 `autoStopOnSilence=false` 路径 | ☐ |
+| 长按超过 15s | 达 `MAX_AUDIO_BYTES(15s)` 自动转写，不卡死；写盘失败时日志报错且下次录音可继续（processing 自愈） | ☐ |
+| 轻声「嘿黛西」唤醒 | 喊话即唤醒（VAD 阈值下限 0.012）；日志 VAD `threshold=0.0120`；涵盖「かいで/ハイデイジー/hey daysi/hei dai zi」等变体 | ☐ |
+| 唤醒词误触发 | 普通对话「今天天气怎么样」「帮我打开音乐」**不**唤醒 | ☐ |
+| 火山 ASR | 若仍 403，悬浮球/日志显示真实 HTTP 状态码 + 响应体 + 排查提示（model_name 已与 wsUrl 末段集群自动对齐） | ☐ |
+| 「打开浏览器」 | 成功拉起默认浏览器；失败时**不再**反复重试（日志 `FAIL:EXE_NOT_FOUND` 后落回 chat 报告，无 `runPowerShell failed` 循环） | ☐ |
+| 「打开记事本」 | App Paths 解析 `notepad.exe` 直接拉起，返回 `OK:notepad` | ☐ |
+| 悬浮球位置 | 首次显示时完全在屏幕内（y=屏幕顶+8px），不再顶出屏幕 20px | ☐ |
+| 悬浮球三区 | 悬浮球 + ASR 实时文本 + LLM 回答滚动区三块并排显示；LLM 边生成边滚入右侧 | ☐ |
+| 点击悬浮球 | 空闲/聆听点 orb = 切换录音/停止；speaking 点 orb = 静音 | ☐ |
+| 多轮对话 | 「重庆天气」→「打开浏览器」→「那换个城市呢」能记住前文（silent_done 不再清空会话） | ☐ |
 
 ## 界面与 LLM 提示适配
 
