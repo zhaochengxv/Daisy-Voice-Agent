@@ -182,34 +182,47 @@ async function ensureMic() {
 
     try {
       logToMain("ensureMic: requesting getUserMedia deviceId=" + (inputDeviceId || "default"));
-      const audioConstraints = {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      };
-      // Bluetooth headsets in hands-free mode are often 16kHz-only; forcing
-      // 48kHz there can silently produce silence. Let the browser negotiate
-      // the device-native rate instead and downsample below.
-      if (inputDeviceId) {
-        audioConstraints.deviceId = { exact: inputDeviceId };
-      }
-      try {
-        newStream = await navigator.mediaDevices.getUserMedia({
-          audio: audioConstraints,
-        });
-      } catch (gumError) {
-        // Selected device is gone (e.g. headset unplugged). Fall back to the
-        // OS default instead of failing the whole session.
+      // Bluetooth HFP headsets bring their own hardware echo-cancel/gain; when
+      // Chromium layers software AEC/AGC/NS on top, the two adaptive filters
+      // fight and the input collapses to near-silence (observed as maxLevel≈0.0003
+      // even though the OS mic test is loud). Detection below re-acquires with
+      // processing disabled for Bluetooth endpoints.
+      const buildConstraints = (processing) => {
+        const c = {
+          channelCount: 1,
+          echoCancellation: processing,
+          noiseSuppression: processing,
+          autoGainControl: processing,
+        };
         if (inputDeviceId) {
-          logToMain("ensureMic: selected device failed (" + gumError.message + "), falling back to default");
-          inputDeviceId = "";
-          newStream = await navigator.mediaDevices.getUserMedia({
-            audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          });
-        } else {
+          c.deviceId = { exact: inputDeviceId };
+        }
+        return c;
+      };
+      const acquireStream = async (processing) => {
+        try {
+          return await navigator.mediaDevices.getUserMedia({ audio: buildConstraints(processing) });
+        } catch (gumError) {
+          // Selected device is gone (e.g. headset unplugged). Fall back to the
+          // OS default instead of failing the whole session.
+          if (inputDeviceId) {
+            logToMain("ensureMic: selected device failed (" + gumError.message + "), falling back to default");
+            inputDeviceId = "";
+            return await navigator.mediaDevices.getUserMedia({
+              audio: { channelCount: 1, echoCancellation: processing, noiseSuppression: processing, autoGainControl: processing },
+            });
+          }
           throw gumError;
         }
+      };
+
+      newStream = await acquireStream(true);
+      const firstTrack = newStream.getAudioTracks()[0];
+      const deviceLabel = (firstTrack && firstTrack.label) || "";
+      if (firstTrack && /bluetooth/i.test(deviceLabel)) {
+        logToMain("ensureMic: bluetooth input detected (" + deviceLabel + "), retrying without AEC/AGC/NS");
+        newStream.getTracks().forEach((track) => track.stop());
+        newStream = await acquireStream(false);
       }
 
       newContext = new AudioContext({ sampleRate: 48000 });

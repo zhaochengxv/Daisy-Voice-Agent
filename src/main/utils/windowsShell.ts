@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import path from "node:path";
+import fs from "node:fs";
 import { logError } from "./logger";
 
 const execFileAsync = promisify(execFile);
@@ -26,6 +28,25 @@ export interface PowerShellOptions {
   args?: string[];
 }
 
+/**
+ * 定位 powershell.exe：优先绝对路径（SystemRoot 拼接，避免 PATH 异常导致
+ * spawn ENOENT，例如某些精简 PATH 或非标准部署）；找不到再回退裸名让系统解析。
+ */
+function resolvePowerShellPath(): string {
+  const root = process.env.SystemRoot || "C:\\Windows";
+  const candidates = [
+    path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    path.join(root, "Sysnative", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    "powershell.exe",
+  ];
+  for (const candidate of candidates) {
+    if (!candidate.includes("\\") || fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "powershell.exe";
+}
+
 export async function runPowerShell(script: string, options: PowerShellOptions = {}): Promise<string> {
   const { timeoutMs = 15000, args = [] } = options;
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -34,7 +55,7 @@ export async function runPowerShell(script: string, options: PowerShellOptions =
   });
   try {
     // -STA：剪贴板 Get/Set-Clipboard 需要单线程 Apartment（powershell.exe 默认 MTA）
-    const { stdout } = await execFileAsync("powershell.exe", [
+    const { stdout } = await execFileAsync(resolvePowerShellPath(), [
       "-NoProfile",
       "-NonInteractive",
       "-STA",
