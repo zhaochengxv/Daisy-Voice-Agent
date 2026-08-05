@@ -15,10 +15,66 @@ let desiredRecording = false;
 let operationGeneration = 0;
 let wakeWordEnabled = false;
 let shuttingDown = false;
+let inputDeviceId = "";
 
 function logToMain(msg) {
   diriAPI.sendRendererLog("AUDIO_LOG: " + msg);
 }
+
+// Enumerate audio input devices (with labels) and report to main so the
+// settings page can offer a recorder-device picker. Especially needed for
+// Bluetooth headsets: the OS default input may be the laptop mic instead of
+// the headset mic.
+async function enumerateAudioInputs() {
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices
+      .filter((d) => d.kind === "audioinput")
+      .map((d) => ({ deviceId: d.deviceId || "default", label: d.label || "麦克风" }));
+    if (inputs.length > 0) {
+      logToMain("enumerateAudioInputs: " + JSON.stringify(inputs.map((i) => i.label)));
+      diriAPI.reportAudioDevices(inputs);
+    }
+  } catch (err) {
+    logToMain("enumerateAudioInputs failed: " + (err && err.message));
+  }
+}
+
+// Reload the mic pipeline with the newly selected input device. Keeps the
+// pending recording state so a mid-idle switch never drops an active session.
+async function switchInputDevice(deviceId) {
+  inputDeviceId = deviceId || "";
+  logToMain("switchInputDevice: deviceId=" + inputDeviceId);
+  const keepRecording = isRecording;
+  const keepWanted = desiredRecording;
+  releaseMic("input device switched");
+  operationGeneration++;
+  if (keepRecording || keepWanted || wakeWordEnabled) {
+    try {
+      await ensureMic();
+      if (!shuttingDown) {
+        isRecording = keepRecording || desiredRecording;
+        if (isRecording) diriAPI.sendAudioReady();
+      }
+    } catch (err) {
+      logToMain("switchInputDevice ensureMic failed: " + err.message);
+      if (isRecording) {
+        isRecording = false;
+        diriAPI.sendAudioError("无法访问麦克风：" + err.message);
+      }
+    }
+  }
+  enumerateAudioInputs();
+}
+
+diriAPI.onAudioInputDeviceSet((deviceId) => {
+  switchInputDevice(deviceId || "");
+});
+
+diriAPI.onAudioDevicesRefresh(() => {
+  enumerateAudioInputs();
+});
 
 function downsampleBuffer(inputBuffer, inputSampleRate) {
   if (inputSampleRate === TARGET_SAMPLE_RATE) {
@@ -125,16 +181,36 @@ async function ensureMic() {
     let newGain = null;
 
     try {
-      logToMain("ensureMic: requesting getUserMedia");
-      newStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        sampleRate: 48000,
+      logToMain("ensureMic: requesting getUserMedia deviceId=" + (inputDeviceId || "default"));
+      const audioConstraints = {
         channelCount: 1,
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
-      },
-    });
+      };
+      // Bluetooth headsets in hands-free mode are often 16kHz-only; forcing
+      // 48kHz there can silently produce silence. Let the browser negotiate
+      // the device-native rate instead and downsample below.
+      if (inputDeviceId) {
+        audioConstraints.deviceId = { exact: inputDeviceId };
+      }
+      try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+        });
+      } catch (gumError) {
+        // Selected device is gone (e.g. headset unplugged). Fall back to the
+        // OS default instead of failing the whole session.
+        if (inputDeviceId) {
+          logToMain("ensureMic: selected device failed (" + gumError.message + "), falling back to default");
+          inputDeviceId = "";
+          newStream = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          });
+        } else {
+          throw gumError;
+        }
+      }
 
       newContext = new AudioContext({ sampleRate: 48000 });
       newSource = newContext.createMediaStreamSource(newStream);
@@ -305,6 +381,12 @@ diriAPI.onStopRecording(() => {
 
 diriAPI.onWakeWordEnabled((enabled) => {
   setWakeWordEnabled(Boolean(enabled));
+});
+
+window.addEventListener("load", () => {
+  enumerateAudioInputs();
+  // Re-enumerate after mic permission is granted so device labels populate.
+  setTimeout(enumerateAudioInputs, 2000);
 });
 
 window.onerror = (message, source, lineno, colno, error) => {

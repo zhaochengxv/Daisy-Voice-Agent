@@ -38,6 +38,7 @@ interface SettingsState {
   WHISPER_MODEL: string;
   GLOBAL_SHORTCUT_DISPLAY: string;
   AUTO_LAUNCH: boolean;
+  AUDIO_INPUT_DEVICE: string;
 }
 
 interface ChatEntry {
@@ -61,6 +62,7 @@ const DEFAULT_SETTINGS: SettingsState = {
   WHISPER_MODEL: "ggml-base.bin",
   GLOBAL_SHORTCUT_DISPLAY: "RightOption",
   AUTO_LAUNCH: false,
+  AUDIO_INPUT_DEVICE: "",
 };
 
 function rateToStr(n: number): string {
@@ -95,6 +97,8 @@ export default function App() {
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "upToDate" | "error">("idle");
   const [updateMessage, setUpdateMessage] = useState<string>("");
   const [updateDownloadPercent, setUpdateDownloadPercent] = useState<number>(0);
+
+  const [audioDevices, setAudioDevices] = useState<Array<{ deviceId: string; label: string }>>([]);
 
   const isLLMActive = settings.DEEPSEEK_API_KEY.trim().length > 5;
   const isASRActive =
@@ -136,8 +140,13 @@ export default function App() {
         if (cfg.WHISPER_MODEL !== undefined) merged.WHISPER_MODEL = cfg.WHISPER_MODEL;
         if (cfg.GLOBAL_SHORTCUT !== undefined) merged.GLOBAL_SHORTCUT_DISPLAY = cfg.GLOBAL_SHORTCUT || "RightOption";
         if (cfg.AUTO_LAUNCH !== undefined) merged.AUTO_LAUNCH = cfg.AUTO_LAUNCH === "true";
+        if (cfg.AUDIO_INPUT_DEVICE !== undefined) merged.AUDIO_INPUT_DEVICE = cfg.AUDIO_INPUT_DEVICE;
         try {
           merged.AUTO_LAUNCH = await window.diriAPI.getAutoLaunch();
+        } catch {}
+        try {
+          const devices = await window.diriAPI.getAudioDevices();
+          setAudioDevices(devices || []);
         } catch {}
         setSettings(merged);
         setConfigLoaded(true);
@@ -240,6 +249,7 @@ export default function App() {
       WHISPER_MODEL: settings.WHISPER_MODEL,
       GLOBAL_SHORTCUT: settings.GLOBAL_SHORTCUT_DISPLAY,
       AUTO_LAUNCH: String(settings.AUTO_LAUNCH),
+      AUDIO_INPUT_DEVICE: settings.AUDIO_INPUT_DEVICE,
     };
     try {
       const ok = await window.diriAPI.updateConfig(payload);
@@ -502,13 +512,51 @@ export default function App() {
                             placeholder="volc.seedasr.sauc.duration" className="glass-input" />
                         </div>
                       </div>
+                      <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-4 mt-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex flex-col gap-0.5">
+                            <label className="text-[12px] font-semibold text-slate-500 ml-1">录音输入设备</label>
+                            <p className="text-[11px] text-slate-400 ml-1">
+                              蓝牙耳机说话没反应时，多半是系统默认麦克风不是耳机。在这里选定耳机麦克风（如 {audioDevices.length > 0 && `"${audioDevices[0].label}"`}）并保存。
+                            </p>
+                          </div>
+                          <button onClick={async () => {
+                            try {
+                              window.diriAPI.refreshAudioDevices();
+                              await new Promise((r) => setTimeout(r, 600));
+                              const devices = await window.diriAPI.getAudioDevices();
+                              setAudioDevices(devices || []);
+                              showTemporaryStatus("已刷新录音设备列表", "info");
+                            } catch {
+                              showTemporaryStatus("刷新设备列表失败", "error");
+                            }
+                          }} className="text-[11px] px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium transition-all">
+                            刷新
+                          </button>
+                        </div>
+                        <select
+                          value={settings.AUDIO_INPUT_DEVICE}
+                          onChange={(e) => handleInputChange("AUDIO_INPUT_DEVICE", e.target.value)}
+                          className="glass-input cursor-pointer"
+                        >
+                          <option value="">系统默认麦克风</option>
+                          {audioDevices.map((d) => (
+                            <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+                          ))}
+                        </select>
+                        <p className="text-[11px] text-slate-400 leading-relaxed">
+                          提示：Windows 蓝牙耳机需在「声音设置 → 输入」中把耳机设为默认麦克风；若耳机只开了立体声（音乐）模式，麦克风不可用，需切换为「耳机/耳麦」模式后刷新列表。
+                        </p>
+                      </div>
                       <div className="liquid-glass p-5 rounded-[22px] flex flex-col gap-2 mt-4">
                         <h4 className="text-sm font-semibold text-slate-800">参数获取步骤</h4>
                         <ol className="text-[12px] text-slate-500 leading-relaxed list-decimal list-inside flex flex-col gap-1.5">
-                          <li>注册并登录 <a href="https://console.volcengine.com" target="_blank" rel="noopener noreferrer" className="text-slate-600 hover:text-slate-800 font-medium hover:underline">火山引擎控制台</a>，完成实名认证</li>
-                          <li>在左侧菜单进入「语音技术」→「录音文件识别」服务（或直接打开上方「获取」链接），点击「开通服务」</li>
-                          <li>开通后创建应用，在应用的「访问令牌」页面查看 <b>App ID</b> 与 <b>Access Token</b>，复制粘贴到上方对应输入框</li>
-                          <li><b>Resource ID</b> 使用默认值 <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded">volc.seedasr.sauc.duration</code> 即可（流式音频识别）</li>
+                          <li>注册并登录 <a href="https://console.volcengine.com" target="_blank" rel="noopener noreferrer" className="text-slate-600 hover:text-slate-800 font-medium hover:underline">火山引擎控制台</a>，完成实名认证（无需充值）</li>
+                          <li>在左侧菜单进入「语音技术」→「语音识别大模型 / 录音文件识别」服务（或直接打开上方「获取」链接），点击「开通服务」</li>
+                          <li>进入「应用管理」→ 若提示「尚未创建应用，点击现在创建」→ 创建应用</li>
+                          <li><b>选择「接入能力」</b>：勾选语音识别相关能力（本项目走 <b>流式语音识别</b> WebSocket，选择「语音识别大模型」或「流式语音识别」即可；语音合成/声音复刻等不需要，可不勾）</li>
+                          <li>创建成功后，在应用的「访问令牌」页复制 <b>App ID</b> 与 <b>Access Token</b> 粘贴到上方对应输入框</li>
+                          <li><b>Resource ID</b> 使用默认值 <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded">volc.seedasr.sauc.duration</code> 即可（大模型流式识别）</li>
                           <li>保存后点击左下角「保存」按钮生效；配置成功后状态栏「云端 ASR」会点亮</li>
                         </ol>
                       </div>

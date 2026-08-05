@@ -5,6 +5,11 @@ export const IPC_CHANNELS = {
   AUDIO_WAKE_WORD_ENABLED: "audio:wake-word-enabled",
   AUDIO_READY: "audio:ready",
   AUDIO_STOPPED: "audio:stopped",
+  AUDIO_DEVICES_LIST: "audio:devices-list",
+
+  // Main -> audio renderer: switch recording input device
+  AUDIO_INPUT_DEVICE_SET: "audio:input-device-set",
+  AUDIO_DEVICES_REFRESH: "audio:devices-refresh",
 
   // Main -> renderer
   ASR_PARTIAL: "asr:partial",
@@ -47,6 +52,10 @@ export const IPC_CHANNELS = {
   // Auto launch
   AUTOLAUNCH_GET: "autolaunch:get",
   AUTOLAUNCH_SET: "autolaunch:set",
+
+  // Recording input device management
+  GET_AUDIO_DEVICES: "audio:devices-get",
+  SET_AUDIO_INPUT_DEVICE: "audio:input-device-update",
 
   // Float window interaction
   SET_IGNORE_MOUSE: "window:set-ignore-mouse",

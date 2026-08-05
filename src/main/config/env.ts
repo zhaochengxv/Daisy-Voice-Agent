@@ -80,6 +80,9 @@ export const config = {
     model: process.env.WHISPER_MODEL || "ggml-base.bin",
     shortcutUseWhisper: process.env.SHORTCUT_USE_WHISPER === "true",
   },
+  audio: {
+    inputDevice: process.env.AUDIO_INPUT_DEVICE || "",
+  },
   shortcut: {
     globalShortcut: process.env.GLOBAL_SHORTCUT || "RightOption",
   },

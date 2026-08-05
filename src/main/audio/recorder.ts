@@ -2,6 +2,12 @@ import path from "node:path";
 import { BrowserWindow, ipcMain } from "electron";
 import { IPC_CHANNELS } from "../ipc/channels";
 import { log } from "../utils/logger";
+import { config } from "../config/env";
+
+export interface AudioInputDevice {
+  deviceId: string;
+  label: string;
+}
 
 export enum RecorderState {
   IDLE = "IDLE",
@@ -20,6 +26,25 @@ let startTimeout: NodeJS.Timeout | null = null;
 let stopTimeout: NodeJS.Timeout | null = null;
 let pendingStartAfterStop = false;
 let wakeWordCaptureEnabled = false;
+
+let audioDevices: AudioInputDevice[] = [];
+
+export function getAudioDevices(): AudioInputDevice[] {
+  return audioDevices;
+}
+
+export function getAudioInputDevice(): string {
+  return config.audio.inputDevice || "";
+}
+
+export function setAudioInputDevice(deviceId: string): void {
+  config.audio.inputDevice = deviceId;
+  log(`[recorder] input device set to: ${deviceId || "default"}`);
+  const win = ensureAudioWindow();
+  if (isReady && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+    win.webContents.send(IPC_CHANNELS.AUDIO_INPUT_DEVICE_SET, deviceId);
+  }
+}
 
 function transition(nextState: RecorderState): void {
   const prevState = currentState;
@@ -48,6 +73,20 @@ export function initAudioRecorder(
   ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_ERROR);
   ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_READY);
   ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_STOPPED);
+  ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_DEVICES_LIST);
+  ipcMain.removeAllListeners(IPC_CHANNELS.AUDIO_DEVICES_REFRESH);
+
+  ipcMain.on(IPC_CHANNELS.AUDIO_DEVICES_REFRESH, () => {
+    const win = ensureAudioWindow();
+    if (isReady && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.AUDIO_DEVICES_REFRESH);
+    }
+  });
+
+  ipcMain.on(IPC_CHANNELS.AUDIO_DEVICES_LIST, (_event, devices: AudioInputDevice[]) => {
+    audioDevices = Array.isArray(devices) ? devices : [];
+    log(`[recorder] audio input devices (${audioDevices.length}): ${audioDevices.map((d) => d.label).join(", ")}`);
+  });
 
   ipcMain.on(IPC_CHANNELS.AUDIO_DATA, (_event, base64: string) => {
     // The renderer only streams while recording or while wake-word monitoring
@@ -131,6 +170,7 @@ export function ensureAudioWindow(): BrowserWindow {
     isReady = true;
     log("[recorder] audio window loaded");
     sendToAudioWindow(IPC_CHANNELS.AUDIO_WAKE_WORD_ENABLED, wakeWordCaptureEnabled);
+    sendToAudioWindow(IPC_CHANNELS.AUDIO_INPUT_DEVICE_SET, getAudioInputDevice());
     // If we were waiting for the window to load to send START_RECORDING
     if (currentState === RecorderState.STARTING) {
       log("[recorder] audio window loaded while STARTING. Sending START_RECORDING.");

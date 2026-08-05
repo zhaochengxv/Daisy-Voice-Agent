@@ -24,6 +24,14 @@ export interface DiriAPI {
   muteCurrentTts: () => void;
   sendAudioReady: () => void;
   sendAudioStopped: () => void;
+  reportAudioDevices: (devices: { deviceId: string; label: string }[]) => void;
+  onAudioInputDeviceSet: (callback: (deviceId: string) => void) => () => void;
+  onAudioDevicesRefresh: (callback: () => void) => () => void;
+  refreshAudioDevices: () => void;
+
+  // Recording input device management (settings window)
+  getAudioDevices: () => Promise<Array<{ deviceId: string; label: string }>>;
+  setAudioInputDevice: (deviceId: string) => Promise<boolean>;
 
   // Whisper model management
   getWhisperStatus: (modelName?: string) => Promise<{ cliInstalled: boolean; modelExists: boolean; modelPath: string; modelName: string }>;
@@ -111,6 +119,13 @@ const api: DiriAPI = {
   muteCurrentTts: () => ipcRenderer.send(IPC_CHANNELS.TTS_MUTE_CURRENT),
   sendAudioReady: () => ipcRenderer.send(IPC_CHANNELS.AUDIO_READY),
   sendAudioStopped: () => ipcRenderer.send(IPC_CHANNELS.AUDIO_STOPPED),
+  reportAudioDevices: (devices: { deviceId: string; label: string }[]) => ipcRenderer.send(IPC_CHANNELS.AUDIO_DEVICES_LIST, devices),
+  onAudioInputDeviceSet: createListener<string>(IPC_CHANNELS.AUDIO_INPUT_DEVICE_SET),
+  onAudioDevicesRefresh: createListener(IPC_CHANNELS.AUDIO_DEVICES_REFRESH),
+  refreshAudioDevices: () => ipcRenderer.send(IPC_CHANNELS.AUDIO_DEVICES_REFRESH),
+
+  getAudioDevices: () => ipcRenderer.invoke(IPC_CHANNELS.GET_AUDIO_DEVICES),
+  setAudioInputDevice: (deviceId: string) => ipcRenderer.invoke(IPC_CHANNELS.SET_AUDIO_INPUT_DEVICE, deviceId),
 
   getWhisperStatus: (modelName?: string) => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_STATUS, modelName),
   downloadWhisperModel: (modelName: string) => ipcRenderer.send(IPC_CHANNELS.WHISPER_DOWNLOAD, modelName),

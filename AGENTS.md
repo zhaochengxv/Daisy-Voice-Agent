@@ -124,6 +124,7 @@ EDGE_TTS_VOICE=zh-CN-XiaoxiaoNeural
 GLOBAL_SHORTCUT=RightOption
 WAKE_WORD_ENABLED=true
 WAKE_WORD=嘿 Daisy
+AUDIO_INPUT_DEVICE=
 ```
 
 ## 外部依赖

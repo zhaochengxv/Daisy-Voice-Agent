@@ -16,6 +16,10 @@ export interface DiriAPI {
   sendRendererError: (message: string) => void;
   sendTtsPlayEnded: () => void;
 
+  getAudioDevices: () => Promise<Array<{ deviceId: string; label: string }>>;
+  setAudioInputDevice: (deviceId: string) => Promise<boolean>;
+  refreshAudioDevices: () => void;
+
   getWhisperStatus: (modelName?: string) => Promise<{
     cliInstalled: boolean;
     modelExists: boolean;

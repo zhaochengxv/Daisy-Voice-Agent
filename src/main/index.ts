@@ -11,7 +11,7 @@ import { IPC_CHANNELS } from "./ipc/channels";
 import { createFloatWindow, getFloatWindow, sendToFloatWindow, showFloatWindow, hideFloatWindow } from "./windows/floatWindow";
 import { createSettingsWindow, getSettingsWindow } from "./windows/settingsWindow";
 import { createTray, destroyTray } from "./windows/tray";
-import { initAudioRecorder, startRecording, stopRecording, getIsRecording, setWakeWordCaptureEnabled } from "./audio/recorder";
+import { initAudioRecorder, startRecording, stopRecording, getIsRecording, setWakeWordCaptureEnabled, getAudioDevices, getAudioInputDevice, setAudioInputDevice } from "./audio/recorder";
 import { AsrSession } from "./asr";
 import { WhisperAsrSession } from "./asr/whisper";
 import { DeepSeekClient, DualChannel } from "./llm/deepseek";
@@ -1413,7 +1413,17 @@ function setupIpc(): void {
       WHISPER_MODEL: config.whisper.model,
       SHORTCUT_USE_WHISPER: String(config.whisper.shortcutUseWhisper),
       AUTO_LAUNCH: String(config.autoLaunch),
+      AUDIO_INPUT_DEVICE: getAudioInputDevice(),
     };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_AUDIO_DEVICES, () => {
+    return getAudioDevices();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SET_AUDIO_INPUT_DEVICE, (_event, deviceId: string) => {
+    setAudioInputDevice(deviceId || "");
+    return true;
   });
 
   ipcMain.handle(IPC_CHANNELS.UPDATE_CONFIG, async (_event, cfg: Record<string, string>) => {
@@ -1430,6 +1440,7 @@ function setupIpc(): void {
         "FIRECRAWL_API_KEY",
         "WHISPER_MODEL", "SHORTCUT_USE_WHISPER",
         "AUTO_LAUNCH",
+        "AUDIO_INPUT_DEVICE",
       ]);
 
       const existing: Record<string, string> = {};
@@ -1479,6 +1490,9 @@ function setupIpc(): void {
       if (cfg.AUTO_LAUNCH !== undefined) {
         config.autoLaunch = cfg.AUTO_LAUNCH === "true";
         app.setLoginItemSettings({ openAtLogin: config.autoLaunch });
+      }
+      if (cfg.AUDIO_INPUT_DEVICE !== undefined) {
+        setAudioInputDevice(cfg.AUDIO_INPUT_DEVICE);
       }
       if (cfg.GLOBAL_SHORTCUT !== undefined && cfg.GLOBAL_SHORTCUT.trim()) {
         config.shortcut.globalShortcut = cfg.GLOBAL_SHORTCUT;
