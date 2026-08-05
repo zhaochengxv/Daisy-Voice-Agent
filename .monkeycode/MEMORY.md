@@ -45,3 +45,14 @@ Entries discovered by the Agent during task execution should follow this format:
 - Instructions:
   - Linux 沙箱无 macOS/Windows 真机、无 osascript/PowerShell/扬声器，只能保证「编译 + 单测 + 平台分派逻辑正确」；Windows API 运行时行为（剪贴板/user32/COM）必须靠 `.monkeycode/docs/windows-smoke-test.md` 真机冒烟，勿向用户承诺已验证可用。
   - 无 libicu 的 Linux 跑 pwsh 需设 `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`；pwsh 可从 GitHub releases 下载 tar.gz 解压即用（/tmp/pwsh），用于 `node scripts/check-ps.js` 校验 windows.ts 全部 PowerShell 脚本语法。
+
+[Project Knowledge Summary]
+- Date: 2026-08-05
+- Context: Discovered by Agent while performing whisper 超时修复与 Windows 交叉打包（v1.5.5）
+- Category: Build Methods / Troubleshooting & Debugging
+- Instructions:
+  - 本沙箱 wine 8.0 已损坏：前缀初始化时 RpcSs 无法启动（OLE ifstub 报错 + `start_rpcss Failed`），任何原生 PE 均 exit 53/c0000135，`npm run dist:win` 的 NSIS 步骤必挂「wine process failed」。不要浪费时间修 wine。
+  - 打包绕法：本地补丁 `node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js`，把 NSIS uninstaller 提取逻辑改为优先 `UninstallerReader.exec(installerPath, uninstallerPath)`（纯 JS 解析，macOS 同款），wine 仅作兜底。注意 `npm ci` 后补丁丢失，需重打。
+  - 发布命名已根治：package.json `nsis.artifactName="${productName}.Setup.${version}.${ext}"`，本地文件/latest.yml/gh 上传名三者一致（此前空格名→latest.yml 用 dash 名→gh 转点名，自动更新 404，需手动修 latest.yml）。
+  - 发布流程：gh 凭据经 `/app/agent/bin/agent git-credential-helper get`（protocol=https host=github.com）取 GH_TOKEN，用完 unset；`gh release create v1.5.x` + `gh release upload` 上传 exe/blockmap/latest.yml，latest.yml 的 url 必须与实际上传资产名一致。
+
