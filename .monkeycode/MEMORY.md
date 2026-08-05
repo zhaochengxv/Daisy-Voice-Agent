@@ -39,7 +39,16 @@ Entries discovered by the Agent during task execution should follow this format:
   - 决策落地后给出简短结果总结即可。
 
 [Project Knowledge Summary]
-- Date: 2026-08-04
+- Date: 2026-08-05
+- Context: Discovered by Agent while fixing v1.5.11 唤醒词不触发与 Windows runShellCommand 失效
+- Category: Troubleshooting & Debugging / Environment Configuration
+- Instructions:
+  - renderer 的 `maxLevel`（峰值）与主进程 VAD `energy`（平均绝对值）口径相差 20~30 倍：Realtek 阵列远场说话时 maxLevel 可达 0.27~0.36，但 VAD energy 仅 0.004~0.013；诊断「唤醒词不触发」要看 VAD energy 是否越过阈值下限，别只看 renderer 峰值。唤醒词 VAD 阈值下界已按此调到 0.002（旧 0.012 使远场语音几乎永不判起音，whisper 只拿到残缺噪声段转出 かいてやすい/you/Okay 乱码）。
+  - Windows `runPowerShell("$env:DAISY_ARG0")` 只回显环境变量值不执行命令；要真执行用户命令字符串须用 `Invoke-Expression $env:DAISY_ARG0`（配合 `2>&1` 合并 stderr 防静默失败）。
+  - websearch/websearch_aisearch MCP 提示 insufficient balance 不可用；核实在线信息改用 webfetch 直接抓页面或靠代码/日志分析。
+
+[Project Knowledge Summary]
+- Date: 2026-08-05
 - Context: Discovered by Agent while performing Windows 适配与 PowerShell 脚本验证
 - Category: Build Methods / Troubleshooting & Debugging / Environment Configuration
 - Instructions:
