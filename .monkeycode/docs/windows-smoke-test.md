@@ -6,7 +6,7 @@
 
 1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy。
 2. 准备 `daisy.env`（火山 ASR + DeepSeek + Edge TTS 配置），与 macOS 同款。
-3. 可选：将 `whisper-cli.exe` + `ggml-base.bin` 放入 `assets/bin` 随包分发，或加入 PATH 以启用唤醒词。
+3. 唤醒词所需 `whisper-cli.exe` + `ggml-base.bin` 已由安装包注入/设置页下载（v1.5.6 起同时注入 `whisper-server.exe`）。
 
 ## 界面与 LLM 提示适配
 
@@ -43,6 +43,21 @@
 | "复制XXX" / 剪贴板读取 | Get-Clipboard 正常 | ☐ |
 | "锁屏" | rundll32 LockWorkStation | ☐ |
 | "打开地图/导航到XX" | `bingmaps:?` 协议 | ☐ |
+
+## whisper-server 常驻转写专项（v1.5.6 新增）
+
+> 背景：v1.5.6 起转写改走常驻 whisper-server（`POST /inference`，模型只加载一次），根治低配机器每次转写 40s+ 超时。转写同时被快捷键本地 ASR（`SHORTCUT_USE_WHISPER=true`）与唤醒词识别共享。任何失败自动回退 whisper-cli，行为不退化。日志关键词：`WhisperServer: listening on 127.0.0.1:<port>`、`WhisperServer: warmup ok`、`mark dead, will restart on next transcribe`。
+
+| 场景 | 预期 | 通过 |
+|------|------|------|
+| 安装包注入完整 | `%LOCALAPPDATA%\Programs\Daisy\resources\app.asar.unpacked\assets\bin\` 含 `whisper-server.exe` + 13 个 whisper/ggml 文件 | ☐ |
+| 首次转写速度 | 冷启动后首次「按住快捷键说话」：转写在 1-3 秒内返回（此前 CLI 路径 40s+） | ☐ |
+| 模型只加载一次 | 连续多次快捷键转写，全程无二次「加载模型」长等待；任务管理器 whisper-server.exe 内存稳定 | ☐ |
+| 唤醒词识别 | 喊「嘿 Daisy」唤醒 → 自动监听 → 命令转写走 server（秒级） | ☐ |
+| 预热日志 | 启动后日志出现 `WhisperServer: warmup ok`（启用 shortcutUseWhisper 或唤醒词时） | ☐ |
+| 崩溃自愈 | 手动 kill whisper-server.exe 后再说话：下一次转写自动重启 server 并成功（日志出现 `mark dead` + 重新 `listening`） | ☐ |
+| 模型切换 | 设置页从 base 切到 tiny（重新下载）：下载完成后 server 自动重启并加载新模型（日志出现 `WhisperServer: listening ... ggml-tiny.bin`），无需重启应用 | ☐ |
+| 退出清理 | 退出 Daisy 后 whisper-server.exe 进程消失（dispose 正常），无残留 | ☐ |
 
 ## 系统工具（42 个）
 
@@ -92,6 +107,6 @@
 
 ## 注意事项
 
-- **无真机验证项**：PowerShell/user32 的真实输出格式（如 Get-Clipboard 返回）、SendKeys 焦点行为、锁屏事件、whisper-cli.exe 调用。这些是 Windows 特有的运行时行为，必须真机确认。
+- **无真机验证项**：PowerShell/user32 的真实输出格式（如 Get-Clipboard 返回）、SendKeys 焦点行为、锁屏事件、whisper-server 端到端转写（HTTP multipart 上传 WAV → 返回文本）。这些是 Windows 特有的运行时行为，必须真机确认。
 - **音量守卫**：Windows 直接跳过（无 Chrome AppleScript 等价物），录音期间系统音量不受影响，这是已知差异。
 - 若 `npm run dist:win` 在本地失败，优先检查 electron-builder 的 wine/NSIS 依赖是否就绪。
