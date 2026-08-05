@@ -160,6 +160,18 @@ export function getWhisperThreads(): number {
 }
 
 /**
+ * whisper-server 常驻转写的线程数：模型只加载一次，可放心用满多核。
+ * 低配(≤4 核)用满全部可用核加速单次推理；高配(8 核+)上限 8 线程，
+ * 留余量给 LLM/TTS/系统，避免推理时整体卡顿。
+ */
+export function getWhisperServerThreads(): number {
+  const cores = os.cpus().length;
+  if (cores <= 0) return 2;
+  if (cores >= 8) return 8;
+  return Math.max(2, cores - 1);
+}
+
+/**
  * Windows 打包仅含 CPU 后端 DLL（ggml-cpu-*.dll）。whisper 默认 use_gpu=true，
  * 在无 GPU 后端时初始化仍走 GPU 路径，导致 ACCESS_VIOLATION (0xC0000005) 段错误
  * 反复崩溃，必须显式 -ng 禁 GPU。macOS 上保留默认（Apple Silicon Metal GPU 加速，

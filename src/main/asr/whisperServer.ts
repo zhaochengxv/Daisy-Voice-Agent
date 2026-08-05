@@ -8,7 +8,7 @@ import {
   getBundledBin,
   getWhisperModelPath,
   getWhisperExecutionEnv,
-  getWhisperThreads,
+  getWhisperServerThreads,
   whisperNeedsNoGpu,
 } from "../config/env";
 
@@ -184,7 +184,8 @@ class WhisperServer {
   private async startOnPort(modelPath: string, port: number, gen: number): Promise<boolean> {
     const args = [
       "-m", modelPath,
-      "-t", String(getWhisperThreads()),
+      // server 常驻转写用独立线程策略：低配用满可用核，高配上限 8 线程
+      "-t", String(getWhisperServerThreads()),
       "-l", "auto",
       // Windows 打包仅含 CPU 后端 DLL（ggml-cpu-*.dll），whisper-server 默认
       // use_gpu=true 在无 GPU 后端时仍走 GPU 初始化，导致 ACCESS_VIOLATION

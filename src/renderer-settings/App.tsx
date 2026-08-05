@@ -717,6 +717,11 @@ export default function App() {
                           </select>
                         </div>
                       </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed px-1">
+                        低配电脑(≤4 核)推荐 <strong className="text-slate-600 font-semibold">Tiny / Base</strong> 保响应速度；
+                        高配电脑可选 <strong className="text-slate-600 font-semibold">Small</strong> 提升唤醒准确率。
+                        切换后需重新下载并重启 Daisy 生效。
+                      </p>
                       <div className="flex items-center justify-between">
                         <span className="text-[13px] font-semibold text-slate-700">模型状态</span>
                         {whisperModelStatus === "downloaded" ? (

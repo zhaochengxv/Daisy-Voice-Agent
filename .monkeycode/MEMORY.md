@@ -88,3 +88,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 判定「采集没问题、推理挂了」的证据链：`Renderer: AUDIO_LOG: audio flowing ... maxLevel=0.0013-0.0017` 持续非零（麦克风电平正常）+ VAD 出现 `inSpeech=true`（唤醒词有触发到 processing）+ 但 whisper 二进制反复 0xC0000005 → 问题在 ASR 推理段而非采集段。
   - 火山 ASR 日志 `ASR configured: true` + `ASR: WebSocket error: Unexpected server response: 403` = 凭证已填但 AppID/Token/ResourceID 三者与已开通服务不匹配（鉴权失败），非「没触发」；代码侧只做提示，根因在用户火山控制台侧。
 
+[Project Knowledge Summary]
+- Date: 2026-08-05
+- Context: Discovered by Agent while doing 低配/高配双机适配（用户用低配 Windows 测试，另有高配电脑）
+- Category: Environment Configuration / Build Methods / Troubleshooting & Debugging
+- Instructions:
+  - Windows 打包 whisper-bin-x64.zip 只含 ggml-cpu-*.dll（无 CUDA/Vulkan/HIP 后端），故 Windows 无论高低配统一 `-ng` 强制 CPU 是正确的；高配即使有 NVIDIA 独显也加载不了 GPU 后端，不要为高配 Windows 恢复 use_gpu。macOS 保留默认（Metal GPU 加速，M1-M4 后端库经 GGML_BACKEND_PATH 指定）。
+  - 高低配差异只用「线程数 + 模型档位」承载：`getWhisperServerThreads()` 常驻 server 低配(≤4核)用满可用核、高配(8核+)上限 8 线程留余量给 LLM/TTS；CLI 一次性回退仍用 `getWhisperThreads()`（上限 4，避免进程启动争抢）。
+  - 模型档位：低配(≤4核)推荐 Tiny/Base 保响应速度，高配可选 Small 提准确率；设置页「语音唤醒→依赖模型」下拉已含三档及建议文案，切换后需重新下载并重启。不要代码强制降档（用户低配跑 Small 是自主选择，只给引导）。
+  - 用户测试机是低配 Windows：验证「低配下 -ng 后唤醒词/快捷键恢复」是 v1.5.7 验收主线；高配机器作为第二验证点（确认 server 线程自适应不引入新问题）。
+
