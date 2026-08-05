@@ -78,6 +78,14 @@ export const config = {
     thinkingEnabled: process.env.DEEPSEEK_THINKING_ENABLED !== "false",
     reasoningEffort: process.env.DEEPSEEK_REASONING_EFFORT || "high",
   },
+  // 视觉理解（图片/视频关键帧）：独立于 DeepSeek 的 OpenAI 兼容视觉模型。
+  // 未配置时 analyze_image/analyze_video 返回引导提示，不阻塞其他功能。
+  vision: {
+    apiKey: process.env.VISUAL_API_KEY || "",
+    baseUrl: process.env.VISUAL_BASE_URL || "https://ark.cn-beijing.volces.com/api/v3",
+    model: process.env.VISUAL_MODEL || "doubao-seed-1-6-vision-250815",
+    maxTokens: process.env.VISUAL_MAX_TOKENS || "512",
+  },
   tts: {
     voice: process.env.EDGE_TTS_VOICE || "zh-CN-XiaoxiaoNeural",
     rate: process.env.EDGE_TTS_RATE || "+20%",

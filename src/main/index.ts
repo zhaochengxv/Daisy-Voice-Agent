@@ -383,6 +383,9 @@ let voiceStartSilenceTimer: NodeJS.Timeout | null = null;
 let earlyCommandTimer: NodeJS.Timeout | null = null;
 let asrResultConsumed = false;
 const VOICE_SILENCE_MS = 3000;
+// 唤醒/持续对话 loop back 后等待用户开口的时间。真机实测：TTS 回复播完用户
+// 需要反应时间，旧 3s 常被静音超时切断（用户感知「对话老中断」），放宽到 8s。
+const VOICE_START_SILENCE_MS = 8000;
 
 function stopSpeaking(): void {
   ttsPipeline.stop();
@@ -702,11 +705,12 @@ function startVoiceListening(): void {
   asrSession.start();
   startRecording();
 
-  // If no speech starts within 3 seconds, end voice listening
+  // 唤醒/持续对话后等待首句。放宽到 8s（此前 3s 会让 TTS 播完的用户来不及开口就被切断）。
   voiceStartSilenceTimer = setTimeout(() => {
     log("Voice start silence timeout (no speech detected), going to idle");
+    playSound("Frog");
     endVoiceListening();
-  }, 3000);
+  }, VOICE_START_SILENCE_MS);
 }
 
 function endVoiceListening(): void {
@@ -1465,6 +1469,9 @@ function setupIpc(): void {
       SHORTCUT_USE_WHISPER: String(config.whisper.shortcutUseWhisper),
       AUTO_LAUNCH: String(config.autoLaunch),
       AUDIO_INPUT_DEVICE: getAudioInputDevice(),
+      VISUAL_API_KEY: config.vision.apiKey,
+      VISUAL_BASE_URL: config.vision.baseUrl,
+      VISUAL_MODEL: config.vision.model,
     };
   });
 
@@ -1492,6 +1499,7 @@ function setupIpc(): void {
         "WHISPER_MODEL", "SHORTCUT_USE_WHISPER",
         "AUTO_LAUNCH",
         "AUDIO_INPUT_DEVICE",
+        "VISUAL_API_KEY", "VISUAL_BASE_URL", "VISUAL_MODEL",
       ]);
 
       const existing: Record<string, string> = {};
@@ -1545,6 +1553,9 @@ function setupIpc(): void {
       if (cfg.AUDIO_INPUT_DEVICE !== undefined) {
         setAudioInputDevice(cfg.AUDIO_INPUT_DEVICE);
       }
+      if (cfg.VISUAL_API_KEY !== undefined) config.vision.apiKey = cfg.VISUAL_API_KEY;
+      if (cfg.VISUAL_BASE_URL !== undefined && cfg.VISUAL_BASE_URL.trim()) config.vision.baseUrl = cfg.VISUAL_BASE_URL;
+      if (cfg.VISUAL_MODEL !== undefined && cfg.VISUAL_MODEL.trim()) config.vision.model = cfg.VISUAL_MODEL;
       if (cfg.GLOBAL_SHORTCUT !== undefined && cfg.GLOBAL_SHORTCUT.trim()) {
         config.shortcut.globalShortcut = cfg.GLOBAL_SHORTCUT;
         globalShortcut?.updateShortcut(cfg.GLOBAL_SHORTCUT);

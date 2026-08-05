@@ -767,6 +767,50 @@ export const availableTools: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "analyze_image",
+      description:
+        "视觉理解：分析本地图片的内容（主体、场景、文字、风格等），回答用户关于该图片的问题。支持 jpg/png/webp 等常见格式。需要配置视觉模型 VISUAL_API_KEY，未配置时返回引导提示。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "图片文件的绝对路径或相对路径",
+          },
+          question: {
+            type: "string",
+            description: "用户想了解的具体问题，不传则默认描述整张图片",
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_video",
+      description:
+        "视觉理解：分析本地视频的关键帧（场景、人物、事件、画面文字等），回答用户关于该视频内容的问题。内部用 ffmpeg 等间隔抽帧后交给视觉模型。需要配置视觉模型 VISUAL_API_KEY。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "视频文件的绝对路径或相对路径（mp4/mov/avi/mkv 等）",
+          },
+          question: {
+            type: "string",
+            description: "用户想了解的具体问题，不传则默认总结视频内容",
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "convert_document",
       description: "转换文档格式（TXT、Markdown、DOCX、PDF、RTF、HTML 等任意文档格式互转）。自动选择最佳转换方式，无需关心底层工具。",
       parameters: {

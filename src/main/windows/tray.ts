@@ -30,8 +30,8 @@ function showOrb(): void {
 export function createTray(): Tray | null {
   if (tray) return tray;
   try {
-    // Windows Tray 原生支持 .ico；直接传 ico 由系统选择尺寸，避免 resize 导致透明
-    const icon = nativeImage.createFromPath(path.join(__dirname, "../../assets/icon.ico"));
+    // Windows Tray 原生支持 .ico；托盘专用小尺寸图标（16/32 保真，深空底色更醒目）
+    const icon = nativeImage.createFromPath(path.join(__dirname, "../../assets/tray.ico"));
     tray = new Tray(icon);
     tray.setToolTip("Daisy 语音助手");
 

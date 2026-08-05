@@ -126,6 +126,18 @@ function Get-AppPath($appName) {
     if ($ap -and $ap.'(default)') { return $ap.'(default)' }
     $ap = Get-ItemProperty "Registry::HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\$appName.exe" -ErrorAction SilentlyContinue
     if ($ap -and $ap.'(default)') { return $ap.'(default)' }
+    # 子串兜底：ASR 误听（如「打开微博…被观看」）时按注册表键名包含匹配取最短名，提高命中率
+    foreach ($root in @("Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths", "Registry::HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths")) {
+        $best = $null; $bestLen = 0
+        Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
+            $keyName = $_.PSChildName -replace '\.exe$',''
+            if ($keyName -like "*$appName*" -and $keyName.Length -gt $bestLen) {
+                $val = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).'(default)'
+                if ($val) { $best = $val; $bestLen = $keyName.Length }
+            }
+        }
+        if ($best) { return $best }
+    }
     return $null
 }
 
@@ -135,6 +147,11 @@ function Get-LnkPath($appName) {
         if (-not (Test-Path $root)) { continue }
         $lnk = Get-ChildItem -Path $root -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
             Where-Object { $_.BaseName -ieq $appName } | Select-Object -First 1
+        if (-not $lnk) {
+            $lnk = Get-ChildItem -Path $root -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
+                Where-Object { $_.BaseName -ilike "*$appName*" } |
+                Sort-Object { $_.BaseName.Length } | Select-Object -First 1
+        }
         if ($lnk) {
             $sh = New-Object -ComObject WScript.Shell
             $target = $sh.CreateShortcut($lnk.FullName).TargetPath

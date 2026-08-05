@@ -1662,6 +1662,14 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
           args.mode ? String(args.mode) : undefined,
           args.replace_with ? String(args.replace_with) : undefined
         );
+      case "analyze_image": {
+        const { analyzeImage } = await import("../vision");
+        return await analyzeImage(String(args.path), args.question ? String(args.question) : undefined);
+      }
+      case "analyze_video": {
+        const { analyzeVideo } = await import("../vision");
+        return await analyzeVideo(String(args.path), args.question ? String(args.question) : undefined);
+      }
       case "send_email":
         return await sendEmail(
           String(args.to),

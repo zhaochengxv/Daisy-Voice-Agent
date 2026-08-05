@@ -9,7 +9,7 @@ vi.mock("../src/main/asr/whisperServer", () => ({
   whisperServer: { transcribe: transcribeMock },
 }));
 
-import { WakeWordMonitor } from "../src/main/wakeword/monitor";
+import { WakeWordMonitor, isWakeWordMatch } from "../src/main/wakeword/monitor";
 
 const SAMPLE_RATE = 16000;
 
@@ -92,5 +92,34 @@ describe("VAD 阈值修复（v1.5.11 远场低幅语音可触发）", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(transcribeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("isWakeWordMatch 宽松后缀兜底（v1.5.12 whisper base 前缀误听）", () => {
+  it("主模式：标准「嘿黛西」命中", () => {
+    expect(isWakeWordMatch("嘿黛西")).toBe(true);
+    expect(isWakeWordMatch("Hey, Daisy")).toBe(true);
+  });
+
+  it("宽松后缀：whisper 把「嘿」误写为「可以」时仍命中", () => {
+    // 真机日志 13:16:24 result="可以 黛西" → 主模式（前缀必须 嘿/嗨/黑/喂）漏触发，
+    // 宽松后缀（短段以 黛西 结尾）应兜住
+    expect(isWakeWordMatch("可以 黛西")).toBe(true);
+  });
+
+  it("宽松后缀：其他常见误写前缀（嗯/好的/欸）也命中", () => {
+    expect(isWakeWordMatch("嗯 黛西")).toBe(true);
+    expect(isWakeWordMatch("好的黛西")).toBe(true);
+    expect(isWakeWordMatch("hey dayzi")).toBe(true);
+  });
+
+  it("宽松后缀：超长句子（含黛西）不误触，避免闲聊里提名字就唤醒", () => {
+    expect(isWakeWordMatch("今天天气不错我们聊聊黛西吧")).toBe(false);
+    expect(isWakeWordMatch("帮我把黛西的资料整理一下")).toBe(false);
+  });
+
+  it("不含唤醒词的文本不命中", () => {
+    expect(isWakeWordMatch("水用微薄")).toBe(false);
+    expect(isWakeWordMatch("以后")).toBe(false);
   });
 });

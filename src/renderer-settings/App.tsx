@@ -15,6 +15,7 @@ import {
   Power,
   History,
   ExternalLink,
+  ScanEye,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { IdleOrb } from "./components/IdleOrb";
@@ -39,6 +40,9 @@ interface SettingsState {
   GLOBAL_SHORTCUT_DISPLAY: string;
   AUTO_LAUNCH: boolean;
   AUDIO_INPUT_DEVICE: string;
+  VISUAL_API_KEY: string;
+  VISUAL_BASE_URL: string;
+  VISUAL_MODEL: string;
 }
 
 interface ChatEntry {
@@ -63,6 +67,9 @@ const DEFAULT_SETTINGS: SettingsState = {
   GLOBAL_SHORTCUT_DISPLAY: "RightOption",
   AUTO_LAUNCH: false,
   AUDIO_INPUT_DEVICE: "",
+  VISUAL_API_KEY: "",
+  VISUAL_BASE_URL: "https://ark.cn-beijing.volces.com/api/v3",
+  VISUAL_MODEL: "doubao-seed-1-6-vision-250815",
 };
 
 function rateToStr(n: number): string {
@@ -149,6 +156,9 @@ export default function App() {
         if (cfg.GLOBAL_SHORTCUT !== undefined) merged.GLOBAL_SHORTCUT_DISPLAY = cfg.GLOBAL_SHORTCUT || "RightOption";
         if (cfg.AUTO_LAUNCH !== undefined) merged.AUTO_LAUNCH = cfg.AUTO_LAUNCH === "true";
         if (cfg.AUDIO_INPUT_DEVICE !== undefined) merged.AUDIO_INPUT_DEVICE = cfg.AUDIO_INPUT_DEVICE;
+        if (cfg.VISUAL_API_KEY !== undefined) merged.VISUAL_API_KEY = cfg.VISUAL_API_KEY;
+        if (cfg.VISUAL_BASE_URL !== undefined) merged.VISUAL_BASE_URL = cfg.VISUAL_BASE_URL;
+        if (cfg.VISUAL_MODEL !== undefined) merged.VISUAL_MODEL = cfg.VISUAL_MODEL;
         try {
           merged.AUTO_LAUNCH = await window.diriAPI.getAutoLaunch();
         } catch {}
@@ -304,6 +314,9 @@ export default function App() {
       GLOBAL_SHORTCUT: settings.GLOBAL_SHORTCUT_DISPLAY,
       AUTO_LAUNCH: String(settings.AUTO_LAUNCH),
       AUDIO_INPUT_DEVICE: settings.AUDIO_INPUT_DEVICE,
+      VISUAL_API_KEY: settings.VISUAL_API_KEY.trim(),
+      VISUAL_BASE_URL: settings.VISUAL_BASE_URL.trim(),
+      VISUAL_MODEL: settings.VISUAL_MODEL.trim(),
     };
     try {
       const ok = await window.diriAPI.updateConfig(payload);
@@ -437,6 +450,7 @@ export default function App() {
               { id: "search", label: "联网搜索", icon: Globe },
               { id: "tts", label: "语音播报", icon: Volume2 },
               { id: "wake", label: "语音唤醒", icon: Zap },
+              { id: "vision", label: "视觉理解", icon: ScanEye },
               { id: "shortcut", label: "快捷键", icon: Keyboard },
               { id: "system", label: "系统配置", icon: Settings },
             ].map((tab) => {
@@ -566,9 +580,7 @@ export default function App() {
                             placeholder="volc.seedasr.sauc.duration" className="glass-input" />
                         </div>
                         <div className="rounded-[14px] bg-amber-50 border border-amber-200 px-4 py-3 text-[11px] leading-relaxed text-amber-700">
-                          <span className="font-semibold">识别失败或报 403？</span> 大概率是 App ID / Access Token / Resource ID
-                          三者与火山控制台开通的服务不匹配。请逐一核对：App ID 和 Access Token 在控制台「语音技术」应用详情中获取；
-                          Resource ID 需与你购买的套餐服务一致（开通大模型流式识别时控制台会给出）。修改后重启 Daisy 生效。
+                          <span className="font-semibold">报 403 提示 resource not granted？</span> 说明 resource_id 对应的服务还没在你的账号下开通。请到火山控制台「语音技术 → 语音识别 → 语音识别大模型」开通流式识别，并确认 Resource ID 与开通版本一致：开通 <b>Seed ASR v2</b> 用 <code className="bg-amber-100 px-1 py-0.5 rounded">volc.seedasr.sauc.duration</code>；开通 <b>大模型 1.0</b> 用 <code className="bg-amber-100 px-1 py-0.5 rounded">volc.bigasr.sauc.duration</code>。App ID / Access Token 必须在同一应用下。修改后重启 Daisy 生效。
                         </div>
                       </div>
                       <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-4 mt-4">
@@ -615,7 +627,7 @@ export default function App() {
                           <li>进入「应用管理」→ 若提示「尚未创建应用，点击现在创建」→ 创建应用</li>
                           <li><b>选择「接入能力」</b>：勾选语音识别相关能力（本项目走 <b>流式语音识别</b> WebSocket，选择「语音识别大模型」或「流式语音识别」即可；语音合成/声音复刻等不需要，可不勾）</li>
                           <li>创建成功后，在应用的「访问令牌」页复制 <b>App ID</b> 与 <b>Access Token</b> 粘贴到上方对应输入框</li>
-                          <li><b>Resource ID</b> 使用默认值 <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded">volc.seedasr.sauc.duration</code> 即可（大模型流式识别）</li>
+                          <li><b>Resource ID</b>：开通 <b>Seed ASR v2（语音识别大模型最新版）</b>用 <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded">volc.seedasr.sauc.duration</code>；若控制台显示开通的是大模型 <b>1.0</b>，则改为 <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded">volc.bigasr.sauc.duration</code>。以控制台开通详情页展示的 Resource ID 为准</li>
                           <li>保存后点击左下角「保存」按钮生效；配置成功后状态栏「云端 ASR」会点亮</li>
                         </ol>
                       </div>
@@ -868,6 +880,39 @@ export default function App() {
                           <span>{whisperModelStatus === "downloaded" ? "模型已下载" : "下载模型"}</span>
                         </button>
                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Vision */}
+                {activeSection === "vision" && (
+                  <div>
+                    <div className="mb-5 px-1">
+                      <h2 className="font-display font-semibold text-2xl tracking-tight text-slate-800">视觉理解</h2>
+                      <p className="text-[12px] text-slate-400 mt-1">让 Daisy 看懂本地图片与视频：问「这张图里有什么」即可识别画面内容（analyze_image / analyze_video 工具）</p>
+                    </div>
+                    <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-5">
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[12px] font-semibold text-slate-500 ml-1">API Key</label>
+                        <input type="password" value={settings.VISUAL_API_KEY}
+                          onChange={(e) => handleInputChange("VISUAL_API_KEY", e.target.value)}
+                          placeholder="任意 OpenAI 兼容视觉模型密钥（豆包/通义/OpenAI…）" className="glass-input" autoComplete="off" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[12px] font-semibold text-slate-500 ml-1">接口地址</label>
+                        <input value={settings.VISUAL_BASE_URL}
+                          onChange={(e) => handleInputChange("VISUAL_BASE_URL", e.target.value)}
+                          placeholder="https://ark.cn-beijing.volces.com/api/v3" className="glass-input" autoComplete="off" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[12px] font-semibold text-slate-500 ml-1">模型名称</label>
+                        <input value={settings.VISUAL_MODEL}
+                          onChange={(e) => handleInputChange("VISUAL_MODEL", e.target.value)}
+                          placeholder="doubao-seed-1-6-vision-250815" className="glass-input" autoComplete="off" />
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        默认使用豆包视觉模型；也可填 OpenAI（gpt-4o）、通义千问（qwen-vl-max）等任意 OpenAI 兼容视觉模型。视频分析会抽取 3~5 个关键帧后一并识别。
+                      </p>
                     </div>
                   </div>
                 )}

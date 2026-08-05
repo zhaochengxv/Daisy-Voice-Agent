@@ -65,7 +65,10 @@ export const SYSTEM_PROMPT = `你是 Daisy，AI 语音助手。
 - get_recent_emails：获取最新邮件（limit）
 - search_emails：搜索邮件（query, limit）
 - run_shell_command：执行终端命令（command）
-- edit_pdf：PDF 原地编辑（find/fill/delete/replace）`;
+- edit_pdf：PDF 原地编辑（find/fill/delete/replace）
+- analyze_image：分析本地图片内容（path, question），用户问「这张图/截图里是什么」时使用
+- analyze_video：分析本地视频关键帧内容（path, question），用户问「这个视频讲了什么」时使用
+- 视觉工具（analyze_image/analyze_video）依赖视觉模型配置：若执行报「视觉模型未配置」，如实转述配置引导，不要假装看到了图片内容。`;
 
 /**
  * Windows 变体提示词：修正 macOS 专属表述，告知 LLM 部分工具降级。

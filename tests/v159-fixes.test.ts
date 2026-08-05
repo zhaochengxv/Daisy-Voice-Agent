@@ -105,7 +105,8 @@ describe("volcanoHttpHint（v1.5.9 状态码透传）", () => {
     const hint = volcanoHttpHint(403, "", "wss://x/api/v3/sauc/bigmodel");
     expect(hint).toContain("403");
     expect(hint).toContain("RESOURCE_ID");
-    expect(hint).toContain("bigmodel");
+    expect(hint).toContain("volc.seedasr.sauc.duration");
+    expect(hint).toContain("volc.bigasr.sauc.duration");
   });
 
   it("401 提示 token 过期", () => {

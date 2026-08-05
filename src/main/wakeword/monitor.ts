@@ -51,15 +51,24 @@ const WAKE_WORD_PATTERNS: RegExp[] = [
   // 6. 拼音近似（"hei dai zi" 一类轻声朗读）
   /[hx][ae]i\s*(?:[d]?)[ae]i\s*(?:zi|si)/i,
 ];
+
+// 宽松兜底：whisper.cpp base 模型中文前缀常误写（真机把「嘿 黛西」识别成
+// 「可以 黛西」），主模式漏触发导致「唤醒词时灵时不灵」。对短语音段（≤8 字）
+// 以「黛西/daisy」类字结尾即视为唤醒，前缀任意。
+const LAX_SUFFIX_RE = /(?:[呆戴代带袋大达黛][西茜希溪喜细]|daisy|daysi|dayzi|deisy|deizy|daizy|dazy|dazie)/i;
+const MAX_LAX_LEN = 8;
 type MonitorState = "idle" | "recording" | "paused";
 
 /** 纯函数：文本是否命中唤醒词（含 whisper.cpp 方言/假名误识别）。供单测与内部共用。 */
 export function isWakeWordMatch(text: string): boolean {
-  const normalized = text.replace(/[\s,，。！!？?、~""''']/g, "");
+  const normalized = text.replace(/[\s,，。！!？?、~""'''.]/g, "");
   for (const pattern of WAKE_WORD_PATTERNS) {
     if (pattern.test(normalized) || pattern.test(text)) {
       return true;
     }
+  }
+  if (normalized.length > 0 && normalized.length <= MAX_LAX_LEN && LAX_SUFFIX_RE.test(normalized)) {
+    return true;
   }
   return false;
 }
@@ -260,11 +269,17 @@ export class WakeWordMonitor extends EventEmitter {
   }
 
   private containsWakeWord(text: string): boolean {
+    const clean = text.replace(/[\s,，。！!？?、~""'''.]/g, "");
     for (const pattern of WAKE_WORD_PATTERNS) {
-      if (pattern.test(text) || pattern.test(text.replace(/[\s,，。！!？?、~""''']/g, ""))) {
+      if (pattern.test(text) || pattern.test(clean)) {
         log(`WakeWordMonitor: matched pattern ${pattern.source}`);
         return true;
       }
+    }
+    // 宽松后缀兜底：短语音段以「黛西/daisy」结尾即唤醒（前缀误听如「可以 黛西」）
+    if (clean.length > 0 && clean.length <= MAX_LAX_LEN && LAX_SUFFIX_RE.test(clean)) {
+      log(`WakeWordMonitor: lax suffix match on "${text}"`);
+      return true;
     }
     return false;
   }
@@ -279,6 +294,13 @@ export class WakeWordMonitor extends EventEmitter {
           return remaining.replace(/^[,，。！!？?、\s]+/, "").trim();
         }
       }
+    }
+    // 宽松模式：定位「黛西」出现位置取后文作为命令
+    const clean = text.replace(/\s/g, "");
+    const suffixMatch = clean.match(LAX_SUFFIX_RE);
+    if (suffixMatch && suffixMatch.index !== undefined) {
+      const remaining = clean.slice(suffixMatch.index + suffixMatch[0].length);
+      return remaining.replace(/^[,，。！!？?、\s]+/, "").trim();
     }
     return "";
   }

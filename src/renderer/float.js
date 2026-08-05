@@ -458,6 +458,8 @@ function render() {
 
   drawSphereBase(cx, cy, radius, currentState);
   drawNeonFilaments(cx, cy, radius, smoothedVolume, currentState);
+  drawOrbitRing(cx, cy, radius, currentState);
+  drawRipples(cx, cy, radius, currentState);
   drawInnerShadow(cx, cy, radius, isDark);
   drawGlassWallRefraction(cx, cy, radius);
 
@@ -588,6 +590,41 @@ function drawGlassWallRefraction(cx, cy, radius) {
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+}
+
+/** 行星环光带：斜穿球体的科技光环（与应用图标视觉语言统一），speaking/listening 时高亮 */
+function drawOrbitRing(cx, cy, radius, activeState) {
+  const active = activeState === "speaking" || activeState === "listening";
+  const palette = palettes[activeState] || palettes.idle;
+  const rgb = hexToRgb(palette.main);
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(-Math.PI / 10);
+  const rx = radius * 1.12, ry = radius * 0.42;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${active ? 0.5 : 0.22})`;
+  ctx.lineWidth = active ? 2.8 : 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 聆听声波涟漪：聆听中从球心向外扩散的光环，强化「正在收音」的感知 */
+function drawRipples(cx, cy, radius, activeState) {
+  if (activeState !== "listening") return;
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  for (let i = 0; i < 3; i++) {
+    const phase = (time * 0.06 + i / 3) % 1;
+    const r = radius * (0.15 + phase * 0.85);
+    const alpha = (1 - phase) * 0.30;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(125, 205, 255, ${alpha})`;
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+  }
   ctx.restore();
 }
 

@@ -306,7 +306,7 @@ export function volcanoHttpHint(status: number, body: string, wsUrl: string): st
   const hintByStatus: Record<number, string> = {
     400: "火山 ASR 请求格式错误(400)：请检查 VOLCENGINE_ASR_WS_URL 是否为有效的流式接口地址",
     401: "火山 ASR 鉴权失败(401)：VOLCENGINE_ACCESS_TOKEN 无效或已过期，请到火山控制台重新生成",
-    403: "火山 ASR 鉴权失败(403)：请核对 VOLCENGINE_APP_ID / VOLCENGINE_ACCESS_TOKEN / VOLCENGINE_RESOURCE_ID 三者是否属于同一应用，且 wsUrl 集群与控制台开通的服务一致（免费版 bigmodel / 正式版 bigmodel_async）",
+    403: "火山 ASR 鉴权失败(403)：VOLCENGINE_RESOURCE_ID 对应的服务未在控制台开通或与 AppID 不匹配。请到火山控制台「语音技术→语音识别→语音识别大模型」开通流式识别集群，并确认 resource_id 与开通版本一致：Seed ASR(v2) 用 volc.seedasr.sauc.duration，大模型 1.0 用 volc.bigasr.sauc.duration",
     404: "火山 ASR 接口不存在(404)：请检查 VOLCENGINE_ASR_WS_URL 路径是否填写正确",
     429: "火山 ASR 用量超限(429)：免费集群并发/时长配额已用尽，请稍后再试或升级正式版",
   };

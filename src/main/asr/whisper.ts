@@ -158,11 +158,16 @@ export class WhisperAsrSession extends EventEmitter {
 
       log("WhisperAsrSession: running whisper-cli...");
 
+      // 命令转写热词：whisper.cpp base 模型中文准确率有限，prompt 注入命令高频词
+      // 能显著压低误听（真机「打开微博」曾被识别为「打开微博叔叔今年的世界被观看」）。
+      const COMMAND_PROMPT =
+        "Daisy, 黛西, 打开, 关闭, 启动, 天气, 时间, 提醒, 闹钟, 日历, 备忘录, 微信, 微博, 抖音, 哔哩哔哩, 浏览器, 音量, 搜索, 计时器, 邮件, 音乐, 视频, 截图";
+
       // 优先走 whisper-server 常驻转写（模型仅加载一次，低配机器提速显著）；
       // server 不可用时回退到一次一进程的 whisper-cli，行为不退化。
       const serverText = await whisperServer.transcribe(wav, {
         language: "zh",
-        prompt: "Daisy, 黛西",
+        prompt: COMMAND_PROMPT,
       });
       let text: string;
       let cliInfo = "";
@@ -174,7 +179,7 @@ export class WhisperAsrSession extends EventEmitter {
           "--no-timestamps",
           "-t", String(getWhisperThreads()),
           "-np",
-          "--prompt", "Daisy, 黛西",
+          "--prompt", COMMAND_PROMPT,
           "-sns",
           ...(whisperNeedsNoGpu() ? ["-ng"] : []),
         ], {

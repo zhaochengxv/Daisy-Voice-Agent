@@ -463,6 +463,24 @@ async function openKnownSiteHome(site: { siteName: string; url: string }): Promi
   }
 }
 
+/** ASR 误听兜底：openApplication 按应用名匹配失败时，若文本含已知站名（如「打开微博…被观看」），
+ *  直接打开该站点首页，避免空转回 LLM 再兜底（快一个往返）。最长 alias 优先防子串误匹配。 */
+async function tryOpenSiteFallback(name: string): Promise<CommandResult | null> {
+  const lower = name.toLowerCase();
+  let best: SiteSearchProvider | null = null;
+  let bestAliasLen = 0;
+  for (const site of SITE_SEARCH_PROVIDERS) {
+    for (const alias of site.aliases) {
+      if (lower.includes(alias.toLowerCase()) && alias.length > bestAliasLen) {
+        best = site;
+        bestAliasLen = alias.length;
+      }
+    }
+  }
+  if (!best?.homeUrl) return null;
+  return openKnownSiteHome({ siteName: best.siteName, url: best.homeUrl });
+}
+
 async function openApp(name: string): Promise<CommandResult> {
   const isBrowserKeyword = ["browser", "默认浏览器", "浏览器", "default_browser", "default browser"].includes(name.trim().toLowerCase());
 
@@ -473,6 +491,10 @@ async function openApp(name: string): Promise<CommandResult> {
       return { handled: true, action: `open:${name}` };
     } catch (e) {
       log(`CommandRouter: failed to open ${name} on Windows`);
+      // ASR 误听兜底：文本含已知站名时直接开站点首页
+      // （真机「打开微博叔叔今年的世界被观看」→ 微博被误听成长句 → 打开 weibo.com）
+      const siteFallback = await tryOpenSiteFallback(name);
+      if (siteFallback) return siteFallback;
       return { handled: false };
     }
   }
@@ -492,6 +514,8 @@ async function openApp(name: string): Promise<CommandResult> {
   const app = matchApp(name);
   if (!app) {
     log(`CommandRouter: openApp("${name}") — no match found in ${appCache.length} apps`);
+    const siteFallback = await tryOpenSiteFallback(name);
+    if (siteFallback) return siteFallback;
     return { handled: false };
   }
   try {
