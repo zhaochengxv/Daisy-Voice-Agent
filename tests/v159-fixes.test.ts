@@ -61,12 +61,21 @@ describe("VAD 阈值（v1.5.9 从 0.02 放宽到 0.012）", () => {
     expect(event.speechStart).toBe(false);
   });
 
-  it("静音基线收敛后，突发 0.008 低于阈值不触发（阈值下限 0.012 之上）", () => {
+  it("静音基线收敛后，突发 0.008 的远场语音可越过 0.002 阈值下限触发（v1.5.11 下界从 0.012 放宽）", () => {
     const vad = new VAD();
     for (let i = 0; i < 50; i++) {
       vad.feed(buildPcm(0.0005, 1));
     }
     const event = vad.feed(buildPcm(0.008, 1));
+    expect(event.speechStart).toBe(true);
+  });
+
+  it("静音基线收敛后，突发 0.0015 仍低于 0.002 阈值下限不触发", () => {
+    const vad = new VAD();
+    for (let i = 0; i < 50; i++) {
+      vad.feed(buildPcm(0.0005, 1));
+    }
+    const event = vad.feed(buildPcm(0.0015, 1));
     expect(event.speechStart).toBe(false);
   });
 

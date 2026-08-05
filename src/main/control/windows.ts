@@ -1254,11 +1254,16 @@ Write-Output ("DELETED:" + $count)`;
   }
 }
 
-/** Windows Shell 命令执行：经 runPowerShell 无 shell 直传，返回 stdout/stderr */
+/**
+ * Windows Shell 命令执行：经 runPowerShell 无 shell 直传。
+ * 用户命令经 DAISY_ARG0 环境变量注入（杜绝拼接注入），脚本内用 Invoke-Expression
+ * 真正执行命令本体（此前直接 `$env:DAISY_ARG0` 只回显文本不执行，导致 LLM 收不到任何输出），
+ * `2>&1` 合并 stderr 防止命令报错时静默失败，`Set-Location $HOME` 对齐 macOS 的 cwd 语义。
+ */
 export async function runShellCommand(command: string): Promise<{ stdout: string; stderr: string }> {
   try {
-    // 用户命令经 DAISY_ARG0 传入，杜绝拼接注入；PowerShell 直接解释命令本体
-    const stdout = await runPowerShell(`$env:DAISY_ARG0`, { args: [command], timeoutMs: 30000 });
+    const stdout = await runPowerShell(`Set-Location $HOME
+Invoke-Expression $env:DAISY_ARG0 2>&1`, { args: [command], timeoutMs: 30000 });
     return { stdout, stderr: "" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

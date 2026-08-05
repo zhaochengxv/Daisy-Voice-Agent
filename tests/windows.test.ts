@@ -31,6 +31,7 @@ import {
   getWindowsDesktopPath,
   openUrl,
   openApplication,
+  runShellCommand,
 } from "../src/main/control/windows";
 import { isWindows, runPowerShell } from "../src/main/utils/windowsShell";
 
@@ -215,6 +216,35 @@ describe("openApplication（v1.5.10 PS 非零退出吞 OK 输出修复）", () =
   it("runPowerShell 失败不再静默吞掉返回已打开", async () => {
     vi.mocked(runPowerShell).mockRejectedValueOnce(new Error("powershell exit 1"));
     await expect(openApplication("chrome")).rejects.toThrow();
+  });
+});
+
+describe("runShellCommand（v1.5.11 修复 $env:DAISY_ARG0 只回显不执行）", () => {
+  it("用 Invoke-Expression 真实执行命令并合并 stderr 输出", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("notepad 正在运行");
+    const result = await runShellCommand("Get-Process notepad | Out-String");
+    expect(result.stdout).toBe("notepad 正在运行");
+    expect(result.stderr).toBe("");
+    const [script, options] = vi.mocked(runPowerShell).mock.calls[0];
+    expect(script).toContain("Invoke-Expression $env:DAISY_ARG0");
+    expect(script).toContain("2>&1");
+    expect(options?.args).toEqual(["Get-Process notepad | Out-String"]);
+    expect(options?.timeoutMs).toBe(30000);
+  });
+
+  it("用户命令经 DAISY_ARG0 注入而非拼接进脚本", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    await runShellCommand("winget search wps");
+    const [script, options] = vi.mocked(runPowerShell).mock.calls[0];
+    expect(script).not.toContain("winget search wps");
+    expect(options?.args).toEqual(["winget search wps"]);
+  });
+
+  it("runPowerShell 失败时错误回流 stderr 而非静默空输出", async () => {
+    vi.mocked(runPowerShell).mockRejectedValueOnce(new Error("command not recognized"));
+    const result = await runShellCommand("not-a-real-command");
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("command not recognized");
   });
 });
 

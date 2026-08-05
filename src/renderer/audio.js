@@ -2,6 +2,11 @@
 
 const TARGET_SAMPLE_RATE = 16000;
 
+// 远场采集增益：Realtek 麦克风阵列用户在正常坐姿下语音峰值仅 0.05~0.36（renderer maxLevel），
+// 直接送入 whisper/ASR 偏低，唤醒词 VAD 与转写都吃不到清晰信号。2 倍增益下远场语音
+// 峰值到 0.54~0.72 仍不削波，安静时本底 0.0002 无感；floatTo16BitPCM 负责 ±1 软限幅。
+const CAPTURE_GAIN = 2.0;
+
 let audioContext = null;
 let mediaStream = null;
 let source = null;
@@ -109,11 +114,11 @@ function downsampleBuffer(inputBuffer, inputSampleRate) {
   return result;
 }
 
-function floatTo16BitPCM(input) {
+function floatTo16BitPCM(input, gain = 1) {
   const output = new ArrayBuffer(input.length * 2);
   const view = new DataView(output);
   for (let i = 0; i < input.length; i++) {
-    const s = Math.max(-1, Math.min(1, input[i]));
+    const s = Math.max(-1, Math.min(1, input[i] * gain));
     view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
   return new Uint8Array(output);
@@ -288,7 +293,7 @@ async function ensureMic() {
         }
 
         const downsampled = downsampleBuffer(inputData, inputSampleRate);
-        const pcm = floatTo16BitPCM(downsampled);
+        const pcm = floatTo16BitPCM(downsampled, CAPTURE_GAIN);
         diriAPI.sendAudioData(uint8ToBase64(pcm));
       };
 

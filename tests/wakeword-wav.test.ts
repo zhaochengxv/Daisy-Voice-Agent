@@ -56,3 +56,41 @@ describe("WakeWordMonitor whisper-server 传参（v1.5.10 WAV 修复）", () => 
     expect(sentBuffer.readUInt32LE(40)).toBe(sentBuffer.length - 44);
   });
 });
+
+describe("VAD 阈值修复（v1.5.11 远场低幅语音可触发）", () => {
+  beforeEach(() => {
+    transcribeMock.mockReset();
+    transcribeMock.mockResolvedValue("hey daisy");
+  });
+
+  it("低幅语音（能量≈0.006，旧下界 0.012 永不触发）现在能触发起音并转写", async () => {
+    const monitor = new WakeWordMonitor("嘿 Daisy");
+    monitor.start();
+
+    // 先喂安静帧把自适应 noiseFloor 从初始 0.005 降到 ~0.001（模拟安静房间本底）
+    for (let i = 0; i < 80; i++) monitor.feedPcm(buildFrame(0));
+
+    // 幅度 200/32768≈0.0061：模拟 Realtek 阵列远场说话的平均能量（真机实测 0.004~0.013）。
+    // 此时 threshold≈max(0.0026, 0.002)=0.0026，0.0061 越过 → speechStart 触发。
+    // 旧下界 0.012 在同样条件下判 isLoud=false，唤醒词永不触发。
+    for (let i = 0; i < 50; i++) monitor.feedPcm(buildFrame(200));
+    for (let i = 0; i < 250; i++) monitor.feedPcm(buildFrame(0));
+
+    await vi.waitFor(() => {
+      expect(transcribeMock).toHaveBeenCalled();
+    }, { timeout: 5000 });
+    expect(transcribeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("安静本底（能量 0.0003 以下）不误触发", async () => {
+    const monitor = new WakeWordMonitor("嘿 Daisy");
+    monitor.start();
+
+    // 模拟安静房间的 Realtek 本底（真机实测 maxLevel 0.0001~0.0004，平均能量更低）
+    for (let i = 0; i < 100; i++) monitor.feedPcm(buildFrame(6));
+    for (let i = 0; i < 300; i++) monitor.feedPcm(buildFrame(0));
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(transcribeMock).not.toHaveBeenCalled();
+  });
+});

@@ -197,7 +197,7 @@ export class WakeWordMonitor extends EventEmitter {
       // 已生成好的 WAV 缓冲，与快捷键路径 whisper.ts 的写法保持一致。
       const serverText = await whisperServer.transcribe(wav, {
         language: "auto",
-        prompt: "Hey Daisy",
+        prompt: "Hey Daisy, 嘿 黛西",
       });
       if (serverText !== null) {
         return serverText.trim().replace(/\[.*?\]/g, "").trim();
@@ -222,7 +222,7 @@ export class WakeWordMonitor extends EventEmitter {
         "--no-timestamps",
         "-t", String(getWhisperThreads()),
         "-np",
-        "--prompt", "Hey Daisy",
+        "--prompt", "Hey Daisy, 嘿 黛西",
         "-sns",
         ...(whisperNeedsNoGpu() ? ["-ng"] : []),
       ], {
@@ -320,9 +320,12 @@ export class VAD {
       // Slowly adapt to background noise
       this.noiseFloor = this.noiseFloor * 0.97 + energy * 0.03;
     }
-    // Threshold is 2x above noise floor, minimum 0.012（唤醒匹配由 whisper 兜底，
-    // 阈值放低可让轻声"嘿黛西"越过门限；仅唤醒词监控使用，不影响快捷键按住说话）
-    const threshold = Math.max(this.noiseFloor * 2, 0.012);
+    // Threshold is 2x above noise floor, minimum 0.002（唤醒匹配由 whisper 兜底，
+    // 阈值放低可让轻声"嘿黛西"越过门限；仅唤醒词监控使用，不影响快捷键按住说话）。
+    // 真机实测：Realtek 麦克风阵列远场说话时 VAD 平均能量仅 0.004~0.013（峰值可到 0.27），
+    // 旧下界 0.012 使多数语音帧判为不响 → 唤醒词录音永远不触发（whisper 只拿到残缺噪声段，
+    // 转出 かいてやすい/you/Okay 等乱码）。0.002 下界在安静(≤0.0003)与语音(≥0.004)之间留足间隔。
+    const threshold = Math.max(this.noiseFloor * 2, 0.002);
     const isLoud = energy > threshold;
 
     this.frameCount++;
