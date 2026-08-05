@@ -79,11 +79,13 @@ export const config = {
     reasoningEffort: process.env.DEEPSEEK_REASONING_EFFORT || "high",
   },
   // 视觉理解（图片/视频关键帧）：独立于 DeepSeek 的 OpenAI 兼容视觉模型。
+  // 默认智谱 GLM-4.6V-Flash（官方免费、支持视觉推理与 128K 上下文）；
+  // 若改回豆包：baseUrl=https://ark.cn-beijing.volces.com/api/v3，model=doubao-seed-1-6-vision-250815。
   // 未配置时 analyze_image/analyze_video 返回引导提示，不阻塞其他功能。
   vision: {
     apiKey: process.env.VISUAL_API_KEY || "",
-    baseUrl: process.env.VISUAL_BASE_URL || "https://ark.cn-beijing.volces.com/api/v3",
-    model: process.env.VISUAL_MODEL || "doubao-seed-1-6-vision-250815",
+    baseUrl: process.env.VISUAL_BASE_URL || "https://open.bigmodel.cn/api/paas/v4",
+    model: process.env.VISUAL_MODEL || "glm-4.6v-flash",
     maxTokens: process.env.VISUAL_MAX_TOKENS || "512",
   },
   tts: {

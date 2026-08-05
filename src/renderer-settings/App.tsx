@@ -68,8 +68,8 @@ const DEFAULT_SETTINGS: SettingsState = {
   AUTO_LAUNCH: false,
   AUDIO_INPUT_DEVICE: "",
   VISUAL_API_KEY: "",
-  VISUAL_BASE_URL: "https://ark.cn-beijing.volces.com/api/v3",
-  VISUAL_MODEL: "doubao-seed-1-6-vision-250815",
+  VISUAL_BASE_URL: "https://open.bigmodel.cn/api/paas/v4",
+  VISUAL_MODEL: "glm-4.6v-flash",
 };
 
 function rateToStr(n: number): string {
@@ -889,29 +889,42 @@ export default function App() {
                   <div>
                     <div className="mb-5 px-1">
                       <h2 className="font-display font-semibold text-2xl tracking-tight text-slate-800">视觉理解</h2>
-                      <p className="text-[12px] text-slate-400 mt-1">让 Daisy 看懂本地图片与视频：问「这张图里有什么」即可识别画面内容（analyze_image / analyze_video 工具）</p>
+                      <p className="text-[12px] text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
+                        <span>让 Daisy 看懂本地图片与视频：问「这张图里有什么」即可识别画面内容（analyze_image / analyze_video 工具）</span>
+                        <a
+                          href="https://docs.bigmodel.cn/cn/guide/models/free/glm-4.6v-flash"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-0.5 text-slate-400 hover:text-slate-600 transition-all active:scale-95 cursor-pointer font-medium hover:underline"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>GLM-4.6V-Flash 官方文档</span>
+                        </a>
+                      </p>
                     </div>
                     <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-5">
                       <div className="flex flex-col gap-2">
-                        <label className="text-[12px] font-semibold text-slate-500 ml-1">API Key</label>
+                        <label className="text-[12px] font-semibold text-slate-500 ml-1">API Key（智谱 API Key，官网 bigmodel.cn 创建）</label>
                         <input type="password" value={settings.VISUAL_API_KEY}
                           onChange={(e) => handleInputChange("VISUAL_API_KEY", e.target.value)}
-                          placeholder="任意 OpenAI 兼容视觉模型密钥（豆包/通义/OpenAI…）" className="glass-input" autoComplete="off" />
+                          placeholder="智谱 API Key，GLM-4.6V-Flash 完全免费" className="glass-input" autoComplete="off" />
                       </div>
                       <div className="flex flex-col gap-2">
                         <label className="text-[12px] font-semibold text-slate-500 ml-1">接口地址</label>
                         <input value={settings.VISUAL_BASE_URL}
                           onChange={(e) => handleInputChange("VISUAL_BASE_URL", e.target.value)}
-                          placeholder="https://ark.cn-beijing.volces.com/api/v3" className="glass-input" autoComplete="off" />
+                          placeholder="https://open.bigmodel.cn/api/paas/v4" className="glass-input" autoComplete="off" />
                       </div>
                       <div className="flex flex-col gap-2">
                         <label className="text-[12px] font-semibold text-slate-500 ml-1">模型名称</label>
                         <input value={settings.VISUAL_MODEL}
                           onChange={(e) => handleInputChange("VISUAL_MODEL", e.target.value)}
-                          placeholder="doubao-seed-1-6-vision-250815" className="glass-input" autoComplete="off" />
+                          placeholder="glm-4.6v-flash" className="glass-input" autoComplete="off" />
                       </div>
                       <p className="text-[11px] text-slate-400 leading-relaxed">
-                        默认使用豆包视觉模型；也可填 OpenAI（gpt-4o）、通义千问（qwen-vl-max）等任意 OpenAI 兼容视觉模型。视频分析会抽取 3~5 个关键帧后一并识别。
+                        默认智谱 GLM-4.6V-Flash（官方免费，视觉推理 + 128K 上下文，效果超过 Qwen3-VL-8B）。
+                        也可换豆包：接口地址填 <code className="text-slate-500">https://ark.cn-beijing.volces.com/api/v3</code>、模型填 <code className="text-slate-500">doubao-seed-1-6-vision-250815</code>、API Key 用火山方舟密钥（约 0.8 元/百万输入 token，识图一次不到 1 分钱）。
+                        视频分析会抽取 3~5 个关键帧后一并识别。
                       </p>
                     </div>
                   </div>

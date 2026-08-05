@@ -18,6 +18,14 @@ const MIME_BY_EXT: Record<string, string> = {
   ".bmp": "image/bmp",
 };
 
+/**
+ * 构造视觉模型的 image_url：智谱开放平台要求裸 base64，
+ * 其余 OpenAI 兼容平台（豆包/通义/OpenAI）用标准 data URI。
+ */
+export function formatImageUrl(baseUrl: string, mime: string, b64: string): string {
+  return /bigmodel\.cn/i.test(baseUrl) ? b64 : `data:${mime};base64,${b64}`;
+}
+
 function getFfmpegPath(): string {
   if (!ffmpegStaticPath) return "ffmpeg";
   if (ffmpegStaticPath.includes(".asar")) {
@@ -47,17 +55,17 @@ function resolveImagePath(input: string): string {
 async function callVisionModel(imagePaths: string[], question: string): Promise<string> {
   if (!isVisionConfigured()) {
     throw new Error(
-      "视觉模型未配置：请在 daisy.env 设置 VISUAL_API_KEY / VISUAL_MODEL（OpenAI 兼容视觉模型，如豆包 doubao-seed-1-6-vision-250815）后重启 Daisy"
+      "视觉模型未配置：请在设置页「视觉理解」填入 API Key（推荐免费方案：智谱 bigmodel.cn 的 GLM-4.6V-Flash，注册即可用）"
     );
   }
-  const baseUrl = (config.vision.baseUrl || "https://ark.cn-beijing.volces.com/api/v3").replace(/\/+$/, "");
+  const baseUrl = (config.vision.baseUrl || "https://open.bigmodel.cn/api/paas/v4").replace(/\/+$/, "");
   const content: Array<Record<string, unknown>> = [
     { type: "text", text: question || "请详细描述这张图片的内容。" },
   ];
   for (const imgPath of imagePaths) {
     const mime = MIME_BY_EXT[path.extname(imgPath).toLowerCase()] || "image/png";
     const b64 = fs.readFileSync(imgPath).toString("base64");
-    content.push({ type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } });
+    content.push({ type: "image_url", image_url: { url: formatImageUrl(baseUrl, mime, b64) } });
   }
 
   const resp = await fetch(`${baseUrl}/chat/completions`, {
