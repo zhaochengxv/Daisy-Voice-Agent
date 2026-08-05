@@ -15,6 +15,13 @@ import { initAudioRecorder, startRecording, stopRecording, getIsRecording, setWa
 import { AsrSession } from "./asr";
 import { WhisperAsrSession } from "./asr/whisper";
 import { whisperServer } from "./asr/whisperServer";
+import {
+  downloadWhisperGpuComponent,
+  extractWhisperGpuComponent,
+  removeWhisperGpuComponent,
+  gpuComponentDownloaded,
+} from "./asr/whisperGpu";
+import { detectNvidiaGpu } from "./control/windows";
 import { DeepSeekClient, DualChannel } from "./llm/deepseek";
 import { ConversationManager, prefetchDesktopPath } from "./llm/conversation";
 import { EdgeTTSPlayer, startTTSCleanup } from "./tts/edgeTTS";
@@ -1576,6 +1583,57 @@ function setupIpc(): void {
 
   ipcMain.on(IPC_CHANNELS.WHISPER_DOWNLOAD, (_event, modelName: string) => {
     downloadWhisperModel(modelName);
+  });
+
+  // ── Whisper GPU 组件（可选 CUDA 一键部署）──
+  // 高配 N 卡机器一键下载官方 cublas 版并部署到 userData/whisper-gpu/bin，
+  // whisperNeedsNoGpu() 检测到 ggml-cuda.dll 后自动放行 GPU。默认 CPU 包不受影响。
+  let gpuDownloadInFlight = false;
+
+  ipcMain.handle(IPC_CHANNELS.WHISPER_GPU_STATUS, async () => {
+    const nvidia = isWindows() ? await detectNvidiaGpu() : "none";
+    return {
+      platform: process.platform,
+      nvidia,
+      deployed: gpuComponentDownloaded(),
+      downloading: gpuDownloadInFlight,
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.WHISPER_GPU_DOWNLOAD, async () => {
+    if (gpuDownloadInFlight) return { success: false, error: "下载进行中" };
+    gpuDownloadInFlight = true;
+    try {
+      // 部署前先释放 whisper-server 对 bin 目录 DLL 的占用（Windows 文件锁）
+      await whisperServer.dispose();
+      const zipPath = await downloadWhisperGpuComponent((percent) => {
+        sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, {
+          phase: "download",
+          percent,
+        });
+      });
+      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "extract", percent: 100 });
+      await extractWhisperGpuComponent(zipPath);
+      fs.promises.unlink(zipPath).catch(() => {});
+      log("whisperGpu: GPU component deployed, restart to activate");
+      return { success: true };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logError("whisperGpu deploy failed", error);
+      return { success: false, error: msg };
+    } finally {
+      gpuDownloadInFlight = false;
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.WHISPER_GPU_REMOVE, async () => {
+    try {
+      await whisperServer.dispose();
+      removeWhisperGpuComponent();
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
   });
 
   ipcMain.on(IPC_CHANNELS.SHORTCUT_CAPTURE, () => {

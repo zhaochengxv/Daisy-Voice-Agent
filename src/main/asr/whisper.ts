@@ -11,6 +11,7 @@ import {
   config,
   getWhisperModelPath,
   getBundledBin,
+  getWhisperBin,
   getWhisperExecutionEnv,
   getWhisperThreads,
   expectedWhisperModelBytes,
@@ -19,7 +20,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const WHISPER_CLI = getBundledBin("whisper-cli");
+const WHISPER_CLI = getWhisperBin("whisper-cli");
 const TEMP_DIR = path.join(os.tmpdir(), "diri-wakeword");
 
 const SAMPLE_RATE = 16000;

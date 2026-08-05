@@ -38,6 +38,17 @@ export interface DiriAPI {
   downloadWhisperModel: (modelName: string) => void;
   onWhisperDownloadProgress: (callback: (progress: { percent: number; status: string }) => void) => () => void;
 
+  // Whisper GPU component (optional CUDA deployment, high-end NVIDIA machines)
+  getWhisperGpuStatus: () => Promise<{
+    platform: NodeJS.Platform;
+    nvidia: "driver-ok" | "card-only" | "none";
+    deployed: boolean;
+    downloading: boolean;
+  }>;
+  downloadWhisperGpu: () => Promise<{ success: boolean; error?: string }>;
+  removeWhisperGpu: () => Promise<{ success: boolean; error?: string }>;
+  onWhisperGpuProgress: (callback: (progress: { phase: "download" | "extract"; percent: number }) => void) => () => void;
+
   // Shortcut capture
   captureShortcut: () => void;
   cancelShortcutCapture: () => void;
@@ -130,6 +141,11 @@ const api: DiriAPI = {
   getWhisperStatus: (modelName?: string) => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_STATUS, modelName),
   downloadWhisperModel: (modelName: string) => ipcRenderer.send(IPC_CHANNELS.WHISPER_DOWNLOAD, modelName),
   onWhisperDownloadProgress: createListener<{ percent: number; status: string }>(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS),
+
+  getWhisperGpuStatus: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_STATUS),
+  downloadWhisperGpu: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_DOWNLOAD),
+  removeWhisperGpu: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_REMOVE),
+  onWhisperGpuProgress: createListener<{ phase: "download" | "extract"; percent: number }>(IPC_CHANNELS.WHISPER_GPU_PROGRESS),
 
   captureShortcut: () => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE),
   cancelShortcutCapture: () => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE_CANCEL),

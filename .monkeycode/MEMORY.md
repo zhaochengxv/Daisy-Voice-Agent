@@ -100,3 +100,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 模型档位：低配(≤4核)推荐 Tiny/Base 保响应速度，高配可选 Small 提准确率；设置页「语音唤醒→依赖模型」下拉已含三档及建议文案，切换后需重新下载并重启。不要代码强制降档（用户低配跑 Small 是自主选择，只给引导）。
   - 用户测试机是低配 Windows：验证「低配下 -ng 后唤醒词/快捷键恢复」是 v1.5.7 验收主线；高配机器作为第二验证点（确认 server 线程自适应不引入新问题）。
 
+[Project Knowledge Summary]
+- Date: 2026-08-05
+- Context: Discovered by Agent while building v1.5.8 GPU 一键部署（设置页 UI + IPC + whisperGpu 模块）
+- Category: Build Methods / Environment Configuration / Troubleshooting & Debugging
+- Instructions:
+  - GPU 组件不打进默认安装包（CUDA 版解压 670MB，会让 155MB CPU 包膨胀到 700MB+ 且低配/无 N 卡用户白下载）。v1.5.8 改为设置页一键部署：`detectNvidiaGpu()`（CIM win32_VideoController 匹配 NVIDIA|GeForce|Quadro|Tesla|RTX|GTX）→ 显示「一键部署 GPU 组件」→ fetch 流式下载官方 whisper-cublas zip → runPowerShell Expand-Archive（timeout 180s）平铺 REQUIRED_FILES 21 个文件到 `userData/whisper-gpu/bin` → 重启后 `hasWhisperGpu()`（检测 ggml-cuda.dll）自动放行 GPU。部署/移除前先 `whisperServer.dispose()` 释放 DLL 文件锁。
+  - 部署路径选 userData 而非覆盖安装目录：避免 Program Files 写权限、升级不丢失、删除即回退 CPU 版。
+  - vitest 里 mock `electron` 的 `app.getPath`（vi.hoisted 状态变量控制 userData 目录）才能测 `hasWhisperGpu`/`whisperNeedsNoGpu`/`getWhisperBin` 的 GPU 放行路径——env.ts 内部函数直接引用模块作用域函数，vi.spyOn 命名空间 export 拦截不到内部调用。
+  - renderer-settings（TSX + vite）类型不归根目录 tsc 管，改设置页后必须 `npm run build:settings`（vite build）验证；根目录 `npx tsc --noEmit` 只覆盖 main/preload。
+

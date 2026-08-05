@@ -47,6 +47,28 @@ export async function getDefaultBrowserProgId(): Promise<string> {
   }
 }
 
+/**
+ * 检测 NVIDIA 独立显卡与 CUDA 驱动可用性，决定是否向用户推荐一键启用 whisper GPU 加速。
+ * 返回 "driver-ok"（有 N 卡且 nvidia-smi 可调用）/ "card-only"（有 N 卡但驱动不可用）
+ * / "none"（无 N 卡）。
+ */
+export async function detectNvidiaGpu(): Promise<"driver-ok" | "card-only" | "none"> {
+  try {
+    const result = await runPowerShell(`
+$card = Get-CimInstance win32_VideoController | Where-Object { $_.Name -match 'NVIDIA|GeForce|Quadro|Tesla|RTX|GTX' } | Select-Object -First 1
+if (-not $card) { 'none' }
+else {
+  try { $null = & nvidia-smi --query-gpu=name --format=csv,noheader 2>$null; 'driver-ok' } catch { 'card-only' }
+}
+`);
+    if (result.includes("driver-ok")) return "driver-ok";
+    if (result.includes("card-only")) return "card-only";
+    return "none";
+  } catch {
+    return "none";
+  }
+}
+
 /** 获取 Windows 真实桌面路径（兼容 OneDrive 已知文件夹重定向），失败回退 ~/Desktop */
 export async function getWindowsDesktopPath(): Promise<string> {
   try {

@@ -6,13 +6,14 @@ import path from "node:path";
 import { log } from "../utils/logger";
 import {
   getBundledBin,
+  getWhisperBin,
   getWhisperModelPath,
   getWhisperExecutionEnv,
   getWhisperServerThreads,
   whisperNeedsNoGpu,
 } from "../config/env";
 
-const WHISPER_SERVER = getBundledBin("whisper-server");
+const WHISPER_SERVER = getWhisperBin("whisper-server");
 const PID_FILE = path.join(os.tmpdir(), "diri-whisper-server.pid");
 const SERVER_READY_TIMEOUT = 8000;
 const START_ATTEMPTS = 4;

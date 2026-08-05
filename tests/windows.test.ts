@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
+
+const electronMockState = vi.hoisted(() => ({ userDataDir: "/__daisy_no_gpu__" }));
+
+vi.mock("electron", () => ({
+  app: {
+    getPath: () => electronMockState.userDataDir,
+    getAppPath: () => electronMockState.userDataDir,
+  },
+}));
 
 vi.mock("../src/main/utils/windowsShell", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/main/utils/windowsShell")>();
@@ -188,6 +198,50 @@ describe("whisperNeedsNoGpu", () => {
       expect(whisperNeedsNoGpu()).toBe(true);
     } finally {
       Object.defineProperty(process, "platform", original);
+    }
+  });
+
+  it("win32 已部署 GPU 组件（存在 ggml-cuda.dll）时自动放行 GPU", async () => {
+    const env = await import("../src/main/config/env");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "daisy-gpu-test-"));
+    const binDir = path.join(tmp, "whisper-gpu", "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, "ggml-cuda.dll"), "");
+    fs.writeFileSync(path.join(binDir, "whisper-server.exe"), "");
+    electronMockState.userDataDir = tmp;
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      expect(env.hasWhisperGpu()).toBe(true);
+      expect(env.whisperNeedsNoGpu()).toBe(false);
+      // getWhisperBin 优先 GPU 目录下的 .exe
+      expect(env.getWhisperBin("whisper-server")).toBe(path.join(binDir, "whisper-server.exe"));
+    } finally {
+      Object.defineProperty(process, "platform", original);
+      electronMockState.userDataDir = "/__daisy_no_gpu__";
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("defaultWhisperModel", () => {
+  it("≥8 核默认推荐 ggml-small.bin（高配提准确率）", async () => {
+    const env = await import("../src/main/config/env");
+    const cpusSpy = vi.spyOn(os, "cpus").mockReturnValue(new Array(8).fill({} as os.CpuInfo));
+    try {
+      expect(env.defaultWhisperModel()).toBe("ggml-small.bin");
+    } finally {
+      cpusSpy.mockRestore();
+    }
+  });
+
+  it("低配(<8 核)默认推荐 ggml-base.bin（保响应）", async () => {
+    const env = await import("../src/main/config/env");
+    const cpusSpy = vi.spyOn(os, "cpus").mockReturnValue(new Array(4).fill({} as os.CpuInfo));
+    try {
+      expect(env.defaultWhisperModel()).toBe("ggml-base.bin");
+    } finally {
+      cpusSpy.mockRestore();
     }
   });
 });

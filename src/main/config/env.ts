@@ -43,6 +43,12 @@ function loadEnv(): void {
 
 loadEnv();
 
+/** 按 CPU 核数推荐默认唤醒词模型：高配(8 核+)用 Small 提准确率，低配默认 Base 保响应。 */
+export function defaultWhisperModel(): string {
+  const cores = os.cpus().length;
+  return cores >= 8 ? "ggml-small.bin" : "ggml-base.bin";
+}
+
 export function getWritableEnvPath(): string {
   const userDataEnv = getUserDataEnvPath();
   if (fs.existsSync(userDataEnv)) return userDataEnv;
@@ -77,7 +83,7 @@ export const config = {
     rate: process.env.EDGE_TTS_RATE || "+20%",
   },
   whisper: {
-    model: process.env.WHISPER_MODEL || "ggml-base.bin",
+    model: process.env.WHISPER_MODEL || defaultWhisperModel(),
     shortcutUseWhisper: process.env.SHORTCUT_USE_WHISPER === "true",
   },
   audio: {
@@ -151,6 +157,34 @@ export function getBundledBin(name: string): string {
   return name + exeSuffix; // fallback to PATH
 }
 
+/** userData 下的 GPU 版 whisper 组件目录（可选 CUDA 一键部署，无需写 Program Files） */
+export function getWhisperGpuBinDir(): string {
+  try {
+    return path.join(app.getPath("userData"), "whisper-gpu", "bin");
+  } catch {
+    return path.join(os.homedir(), ".daisy-whisper-gpu");
+  }
+}
+
+/** 是否已部署 GPU 版 whisper（以 bin 目录存在 ggml-cuda.dll 为准，仅 win32 有意义） */
+export function hasWhisperGpu(): boolean {
+  if (process.platform !== "win32") return false;
+  return fs.existsSync(path.join(getWhisperGpuBinDir(), "ggml-cuda.dll"));
+}
+
+/**
+ * whisper 二进制查找：GPU 版优先（userData/whisper-gpu），其次打包 CPU 版。
+ * 非 win32 或未部署 GPU 时等价于 getBundledBin。
+ */
+export function getWhisperBin(name: string): string {
+  const exeSuffix = process.platform === "win32" ? ".exe" : "";
+  if (hasWhisperGpu()) {
+    const gpuBin = path.join(getWhisperGpuBinDir(), name + exeSuffix);
+    if (fs.existsSync(gpuBin)) return gpuBin;
+  }
+  return getBundledBin(name);
+}
+
 export function getWhisperThreads(): number {
   const cores = os.cpus().length;
   if (cores <= 0) return 2;
@@ -178,14 +212,12 @@ export function getWhisperServerThreads(): number {
  * 该构建下 use_gpu=true 会在 GPU 后端初始化路径触发 ACCESS_VIOLATION
  * (0xC0000005) 段错误反复崩溃（v1.5.6 真机复现），必须 -ng。
  *
- * 高配 N 卡用户可手动部署官方 CUDA 版（whisper-cublas-*-bin-x64.zip）：
- * 把 Release/ 下的 exe/dll 覆盖到 assets/bin。bin 目录出现 ggml-cuda.dll
- * 时自动放行 GPU，无需改代码。macOS 保留默认（Metal GPU 加速），不判 -ng。
+ * 高配 N 卡用户可在设置页一键部署 CUDA 组件到 userData/whisper-gpu/bin
+ * （出现 ggml-cuda.dll），此时自动放行 GPU。macOS 保留默认（Metal GPU），不判 -ng。
  */
 export function whisperNeedsNoGpu(): boolean {
   if (process.platform !== "win32") return false;
-  const binDir = path.dirname(getBundledBin("whisper-cli"));
-  return !fs.existsSync(path.join(binDir, "ggml-cuda.dll"));
+  return !hasWhisperGpu();
 }
 
 export function expectedWhisperModelBytes(modelName: string): number {

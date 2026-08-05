@@ -105,6 +105,14 @@ export default function App() {
     settings.VOLCENGINE_APP_ID.trim().length > 0 &&
     settings.VOLCENGINE_ACCESS_TOKEN.trim().length > 0;
   const isWhisperActive = whisperCliInstalled && whisperModelStatus === "downloaded";
+  const [whisperGpuStatus, setWhisperGpuStatus] = useState<{
+    platform: string;
+    nvidia: "driver-ok" | "card-only" | "none";
+    deployed: boolean;
+    downloading: boolean;
+  }>({ platform: "", nvidia: "none", deployed: false, downloading: false });
+  const [gpuProgress, setGpuProgress] = useState<number>(0);
+  const [gpuPhase, setGpuPhase] = useState<"download" | "extract" | "">("");
   const isFirecrawlActive = settings.FIRECRAWL_API_KEY.trim().length > 0;
 
   const statusTimerRef = useRef<number | null>(null);
@@ -227,6 +235,52 @@ export default function App() {
     });
     return () => off();
   }, []);
+
+  // ==================== Whisper GPU 组件状态 ====================
+  const refreshWhisperGpuStatus = async () => {
+    try {
+      const st = await window.diriAPI.getWhisperGpuStatus();
+      setWhisperGpuStatus(st);
+    } catch {
+      /* 忽略：非 Windows 或 IPC 不可用 */
+    }
+  };
+
+  useEffect(() => {
+    refreshWhisperGpuStatus();
+    const off = window.diriAPI.onWhisperGpuProgress((p) => {
+      setGpuPhase(p.phase);
+      setGpuProgress(p.percent);
+      if (p.percent >= 100 && p.phase === "extract") {
+        showTemporaryStatus("✓ GPU 组件部署完成，重启 Daisy 后生效", "success");
+        setTimeout(() => refreshWhisperGpuStatus(), 500);
+      }
+    });
+    return () => off();
+  }, []);
+
+  const handleDeployGpu = async () => {
+    setGpuPhase("download");
+    setGpuProgress(0);
+    setWhisperGpuStatus((prev) => ({ ...prev, downloading: true }));
+    const res = await window.diriAPI.downloadWhisperGpu();
+    if (!res.success) {
+      showTemporaryStatus("GPU 组件部署失败：" + (res.error || "未知错误"), "error");
+    }
+    setGpuPhase("");
+    setGpuProgress(0);
+    refreshWhisperGpuStatus();
+  };
+
+  const handleRemoveGpu = async () => {
+    const res = await window.diriAPI.removeWhisperGpu();
+    if (res.success) {
+      showTemporaryStatus("已移除 GPU 组件，恢复 CPU 版", "success");
+    } else {
+      showTemporaryStatus("移除失败：" + (res.error || "未知错误"), "error");
+    }
+    refreshWhisperGpuStatus();
+  };
 
   // ==================== 保存设置 ====================
   const handleSaveSettings = async () => {
@@ -723,14 +777,63 @@ export default function App() {
                         切换后需重新下载并重启 Daisy 生效。
                       </p>
                       <div className="rounded-[14px] bg-sky-50 border border-sky-200 px-4 py-3 text-[11px] leading-relaxed text-sky-700">
-                        <span className="font-semibold">高配 N 卡想用 GPU 加速？</span> 默认安装包是纯 CPU 版。
-                        从
-                        <a href="https://github.com/ggml-org/whisper.cpp/releases" target="_blank" rel="noopener noreferrer"
-                          className="text-sky-600 hover:text-sky-800 font-medium hover:underline"> whisper.cpp Releases </a>
-                        下载 <code className="text-sky-600 bg-sky-100 px-1 py-0.5 rounded">whisper-cublas-*-bin-x64.zip</code>，
-                        用其中 Release/ 的 whisper-server.exe、whisper-cli.exe 和全部 dll 覆盖安装目录
-                        <code className="text-sky-600 bg-sky-100 px-1 py-0.5 rounded">resources\app.asar.unpacked\assets\bin\</code>，
-                        重启后自动启用 GPU（检测到 ggml-cuda.dll 即生效）。低配/无 N 卡机器无需操作，保持 CPU 版即可。
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-sky-800">GPU 加速（可选，仅高配 N 卡）</span>
+                          {whisperGpuStatus.deployed ? (
+                            <span className="text-[11px] font-bold text-emerald-600 flex items-center gap-1">
+                              <Check className="w-3.5 h-3.5" /> 已部署
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-semibold text-slate-400">未部署</span>
+                          )}
+                        </div>
+                        {whisperGpuStatus.nvidia === "driver-ok" && !whisperGpuStatus.deployed && (
+                          <p className="mt-1 text-slate-600">
+                            检测到 NVIDIA 显卡及驱动。一键下载官方 CUDA 版 whisper（约 670MB）到本机数据目录，
+                            重启后自动启用 GPU 加速，低配/无 N 卡机器无需操作。
+                          </p>
+                        )}
+                        {whisperGpuStatus.nvidia === "card-only" && !whisperGpuStatus.deployed && (
+                          <p className="mt-1 text-slate-600">
+                            检测到 NVIDIA 显卡但 <code className="text-sky-600 bg-sky-100 px-1 py-0.5 rounded">nvidia-smi</code> 不可用，
+                            需先安装 NVIDIA 显卡驱动才能启用 GPU 加速。
+                          </p>
+                        )}
+                        {whisperGpuStatus.nvidia === "none" && (
+                          <p className="mt-1 text-slate-600">
+                            未检测到 NVIDIA 显卡（或当前非 Windows 平台），使用默认 CPU 版 whisper 即可。
+                          </p>
+                        )}
+                        {whisperGpuStatus.deployed && (
+                          <p className="mt-1 text-slate-600">
+                            GPU 组件已部署到本机数据目录，检测到 <code className="text-sky-600 bg-sky-100 px-1 py-0.5 rounded">ggml-cuda.dll</code> 自动启用 GPU，
+                            重启 Daisy 后生效。删除即可随时回退 CPU 版。
+                          </p>
+                        )}
+                        {whisperGpuStatus.downloading || gpuPhase ? (
+                          <div className="mt-2 flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full bg-sky-100 overflow-hidden">
+                              <div className="h-full bg-sky-500 transition-all" style={{ width: `${gpuProgress}%` }} />
+                            </div>
+                            <span className="text-[11px] text-sky-600 whitespace-nowrap">
+                              {gpuPhase === "extract" ? "解压中" : "下载中"} {gpuProgress}%
+                            </span>
+                          </div>
+                        ) : whisperGpuStatus.nvidia === "driver-ok" && !whisperGpuStatus.deployed ? (
+                          <button
+                            onClick={handleDeployGpu}
+                            className="mt-2 px-3 py-1.5 rounded-[10px] bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-semibold transition-colors"
+                          >
+                            一键部署 GPU 组件
+                          </button>
+                        ) : whisperGpuStatus.deployed ? (
+                          <button
+                            onClick={handleRemoveGpu}
+                            className="mt-2 px-3 py-1.5 rounded-[10px] bg-white border border-slate-200 hover:border-rose-300 hover:text-rose-500 text-slate-500 text-[11px] font-semibold transition-colors"
+                          >
+                            移除 GPU 组件（回退 CPU 版）
+                          </button>
+                        ) : null}
                       </div>
                       <div className="flex items-center justify-between">
                         <span className="text-[13px] font-semibold text-slate-700">模型状态</span>

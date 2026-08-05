@@ -4,7 +4,7 @@
 
 ## 环境准备（Windows）
 
-1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy（当前版本 v1.5.7）。
+1. 执行 `npm run dist:win` 生成 NSIS 安装包，安装后启动 Daisy（当前版本 v1.5.8）。
 2. 准备 `daisy.env`（火山 ASR + DeepSeek + Edge TTS 配置），与 macOS 同款。
 3. 唤醒词所需 `whisper-cli.exe` + `ggml-base.bin` 已由安装包注入/设置页下载（v1.5.6 起同时注入 `whisper-server.exe`）。
 
@@ -31,15 +31,19 @@
 | 窗口拖拽 | 拖动悬浮球时从 orb 或文本区均可拖（Windows 事件绑定在整窗） | ☐ |
 | 点击行为 | 点击文本区同 orb：speaking 时静音、其余打开设置 | ☐ |
 
-## 高配 GPU 可选加速（v1.5.7 新增）
+## 高配 GPU 一键部署（v1.5.8 新增）
 
-> 默认安装包是 CPU 版（`-ng`）。官方 v1.9.2 提供 CUDA 版 `whisper-cublas-*-bin-x64.zip`（含 ggml-cuda.dll），覆盖部署到 `assets\bin\` 后 `whisperNeedsNoGpu()` 自动放行 GPU。仅需在高配 N 卡机器验证。
+> 默认安装包保持 CPU 版（`-ng`），CUDA 组件（约 670MB）不打进包体。设置页「语音唤醒」检测到 NVIDIA 显卡 + `nvidia-smi` 可用时显示「一键部署 GPU 组件」：下载官方 cublas 版 zip → PowerShell 解压到 `userData/whisper-gpu/bin` → 重启后 `whisperNeedsNoGpu()` 检测到 `ggml-cuda.dll` 自动放行 GPU。仅需在高配 N 卡机器验证。
 
 | 场景 | 预期 | 通过 |
 |------|------|------|
-| 部署 CUDA 版 | 从 whisper.cpp Releases 下载 cublas 版，用 Release/ 的 exe+dll 覆盖 `assets\bin\`，重启后日志出现 `use gpu = 1` 且不再崩溃 | ☐ |
-| 未部署 CUDA 版 | 无 N 卡/未覆盖时日志 `use gpu = 0`，正常 CPU 推理不崩溃 | ☐ |
+| 高配 N 卡 + 驱动正常 | 设置页显示「一键部署 GPU 组件」，点按后进度条推进（下载 → 解压），完成后提示重启生效 | ☐ |
+| 部署后重启 | 日志出现 `use gpu = 1`，`whisperNeedsNoGpu()` 返回 false，唤醒词/转写不再崩溃 | ☐ |
 | GPU 推理加速 | small 模型唤醒词/转写在 GPU 下响应明显快于 CPU | ☐ |
+| 移除 GPU 组件 | 设置页点「移除」，bin 目录删除后 `-ng` 自动恢复，重启回退 CPU 版 | ☐ |
+| N 卡但驱动缺失 | 显示「需先安装 NVIDIA 显卡驱动」提示，不显示部署按钮 | ☐ |
+| 无 N 卡 / macOS | 显示「使用默认 CPU 版」提示，不显示部署按钮 | ☐ |
+| 部署中重复点击 | 第二次点击被拒绝（返回「下载进行中」），无并发冲突 | ☐ |
 
 ## 界面与 LLM 提示适配
 

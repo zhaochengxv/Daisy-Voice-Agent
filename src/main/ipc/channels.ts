@@ -44,6 +44,12 @@ export const IPC_CHANNELS = {
   WHISPER_DOWNLOAD: "whisper:download",
   WHISPER_DOWNLOAD_PROGRESS: "whisper:download-progress",
 
+  // Whisper GPU component (optional CUDA deployment)
+  WHISPER_GPU_STATUS: "whisper:gpu-status",
+  WHISPER_GPU_DOWNLOAD: "whisper:gpu-download",
+  WHISPER_GPU_REMOVE: "whisper:gpu-remove",
+  WHISPER_GPU_PROGRESS: "whisper:gpu-progress",
+
   // Shortcut capture
   SHORTCUT_CAPTURE: "shortcut:capture",
   SHORTCUT_CAPTURE_CANCEL: "shortcut:capture-cancel",
