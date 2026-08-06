@@ -71,6 +71,10 @@ export const IPC_CHANNELS = {
   FLOAT_SET_MODE: "window:float-set-mode",
   FLOAT_MODE_CHANGED: "window:float-mode-changed",
   FLOAT_MENU_ACTION: "window:float-menu-action",
+  FLOAT_APPEARANCE_GET: "float:appearance-get",
+  FLOAT_APPEARANCE_SET: "float:appearance-set",
+  FLOAT_APPEARANCE_CHANGED: "float:appearance-changed",
+  FLOAT_AVATAR_CHOOSE: "float:avatar-choose",
 
   // Native context menu
   CONTEXT_MENU_SHOW: "context-menu:show",

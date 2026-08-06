@@ -185,9 +185,44 @@ export async function searchWallpapers(query: string): Promise<string> {
     }
     return output.trim();
   } catch (error) {
-    logError("searchWallpapers failed", error);
-    return `搜索壁纸失败: ${error instanceof Error ? error.message : String(error)}`;
+    // Wallhaven 在部分网络下不可达（fetch failed / 超时），自动降级到 DuckDuckGo 图片搜索
+    logError("searchWallpapers: Wallhaven failed, falling back to DuckDuckGo images", error);
+    try {
+      return await searchWallpapersViaDuckDuckGo(query);
+    } catch (fallbackError) {
+      logError("searchWallpapers: DuckDuckGo fallback failed too", fallbackError);
+      return `搜索壁纸失败（Wallhaven 与 DuckDuckGo 图片源均不可达）: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
+}
+
+/** DuckDuckGo 图片搜索兜底：Wallhaven 不可达时直接返回可下载的图片直链 */
+async function searchWallpapersViaDuckDuckGo(query: string): Promise<string> {
+  log(`searchWallpapers: DuckDuckGo images fallback for "${query}"`);
+  const response = await fetchWithTimeout(
+    `https://duckduckgo.com/i.js?q=${encodeURIComponent(query + " 壁纸")}&o=json&f=,type:wallpaper`,
+    { headers: { "Referer": "https://duckduckgo.com/", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" } }
+  );
+  if (!response.ok) {
+    throw new Error(`DuckDuckGo HTTP ${response.status}`);
+  }
+  const data = await response.json() as {
+    results?: Array<{ image: string; thumbnail: string; title: string; width?: number; height?: number }>;
+  };
+
+  const results = (data.results || []).filter((r) => r.image && /^https?:\/\//.test(r.image));
+  if (results.length === 0) {
+    return `没有找到关于「${query}」的高清壁纸。`;
+  }
+
+  let output = `找到以下关于「${query}」的壁纸（可直接下载直链图片到桌面）：\n\n`;
+  for (let i = 0; i < Math.min(results.length, 5); i++) {
+    const r = results[i];
+    const dim = r.width && r.height ? `${r.width}x${r.height}` : "未知分辨率";
+    output += `${i + 1}. 分辨率: ${dim}\n`;
+    output += `   直接图片链接: ${r.image}\n\n`;
+  }
+  return output.trim();
 }
 
 export async function scrapeUrl(url: string): Promise<string> {

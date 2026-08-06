@@ -46,9 +46,9 @@ export interface DiriAPI {
     deployed: boolean;
     downloading: boolean;
   }>;
-  downloadWhisperGpu: () => Promise<{ success: boolean; error?: string }>;
+  downloadWhisperGpu: () => Promise<{ success: boolean; error?: string; manual?: boolean; manualUrl?: string; manualFileName?: string }>;
   removeWhisperGpu: () => Promise<{ success: boolean; error?: string }>;
-  onWhisperGpuProgress: (callback: (progress: { phase: "download" | "extract"; percent: number; received: number; total: number; speed: number; source: string }) => void) => () => void;
+  onWhisperGpuProgress: (callback: (progress: { phase: "download" | "extract" | "manual" | "manual-done"; percent: number; received: number; total: number; speed: number; source: string; manualUrl?: string; manualFileName?: string }) => void) => () => void;
 
   // Shortcut capture
   captureShortcut: () => void;
@@ -102,6 +102,10 @@ export interface DiriAPI {
   setFloatMode: (mode: "standard" | "mini" | "hidden") => void;
   onFloatModeChanged: (callback: (mode: string) => void) => () => void;
   floatMenuAction: (action: string) => void;
+  getFloatAppearance: () => Promise<{ skin: string; avatarPath: string }>;
+  setFloatAppearance: (appearance: { skin?: string; avatarPath?: string }) => Promise<{ success: boolean; error?: string; skin?: string; avatarPath?: string }>;
+  onFloatAppearanceChanged: (callback: (appearance: { skin: string; avatarPath: string }) => void) => () => void;
+  chooseAvatarFile: () => Promise<{ success: boolean; canceled: boolean; path: string; error?: string }>;
 }
 
 function createListener<T>(channel: string) {
@@ -150,7 +154,7 @@ const api: DiriAPI = {
   getWhisperGpuStatus: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_STATUS),
   downloadWhisperGpu: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_DOWNLOAD),
   removeWhisperGpu: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_REMOVE),
-  onWhisperGpuProgress: createListener<{ phase: "download" | "extract"; percent: number; received: number; total: number; speed: number; source: string }>(IPC_CHANNELS.WHISPER_GPU_PROGRESS),
+  onWhisperGpuProgress: createListener<{ phase: "download" | "extract" | "manual" | "manual-done"; percent: number; received: number; total: number; speed: number; source: string; manualUrl?: string; manualFileName?: string }>(IPC_CHANNELS.WHISPER_GPU_PROGRESS),
 
   captureShortcut: () => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE),
   cancelShortcutCapture: () => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE_CANCEL),
@@ -189,6 +193,11 @@ const api: DiriAPI = {
   setFloatMode: (mode: "standard" | "mini" | "hidden") => ipcRenderer.send(IPC_CHANNELS.FLOAT_SET_MODE, mode),
   onFloatModeChanged: createListener<string>(IPC_CHANNELS.FLOAT_MODE_CHANGED),
   floatMenuAction: (action: string) => ipcRenderer.send(IPC_CHANNELS.FLOAT_MENU_ACTION, action),
+  getFloatAppearance: () => ipcRenderer.invoke(IPC_CHANNELS.FLOAT_APPEARANCE_GET),
+  setFloatAppearance: (appearance: { skin?: string; avatarPath?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FLOAT_APPEARANCE_SET, appearance),
+  onFloatAppearanceChanged: createListener<{ skin: string; avatarPath: string }>(IPC_CHANNELS.FLOAT_APPEARANCE_CHANGED),
+  chooseAvatarFile: () => ipcRenderer.invoke(IPC_CHANNELS.FLOAT_AVATAR_CHOOSE),
 };
 
 contextBridge.exposeInMainWorld("diriAPI", api);

@@ -11,14 +11,18 @@ const ZIP_NAME = `whisper-cublas-${CUBLAS_VERSION}-bin-x64.zip`;
 const GH_BASE = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2";
 const ZIP_URL = `${GH_BASE}/${ZIP_NAME}`;
 
-// GitHub 大文件直连在国内经常超时/被限速。镜像（前缀代理）速度远优于直连，
-// 因此按「镜像优先 → 直连兜底」的顺序尝试，任一成功即采用。
-// 镜像域名会不定期变动，作为尽力而为的降级路径，全部失败则提示手动下载。
+// GitHub 大文件直连在国内经常超时/被限速。镜像（前缀代理）速度远优于直连。
+// 镜像域名会不定期变动，这里尽量多备几组并全部并行探测，取最快者分片下载；
+// 全部过慢时引导用户用浏览器/下载器手动下载（支持断点续传，往往远快于 Node https）。
 const GH_MIRRORS = [
   "https://ghfast.top/",
   "https://gh-proxy.com/",
   "https://ghproxy.net/",
   "https://gh.llkk.cc/",
+  "https://ghproxy.cc/",
+  "https://gitproxy.click/",
+  "https://gh.ddlc.top/",
+  "https://ghps.cc/",
 ];
 
 /** 从 cublas zip 提取并平铺到 userData/whisper-gpu/bin 的必要文件（其余 bench/stream 等工具丢弃） */
@@ -53,8 +57,10 @@ const MAX_REDIRECTS = 4;
 const PROBE_BYTES = 512 * 1024;   // 测速采样字节数（512KB）
 const PROBE_TIMEOUT_MS = 4000;    // 测速时长上限
 const PART_BYTES = 16 * 1024 * 1024; // 每个分片 16MB：进度平滑 + 快速换源
-const WORKERS_PER_SOURCE = 2;     // 每个可用源开 2 个并发连接
-const MAX_SOURCES = 2;            // 同时使用的源数（多源聚合带宽）
+const WORKERS_PER_SOURCE = 3;     // 每个可用源开 3 个并发连接（聚合带宽）
+const MAX_SOURCES = 3;            // 同时使用的源数（多源聚合带宽）
+const SLOW_SOURCE_KBPS = 150;     // 全部源低于此速率时引导手动下载（670MB 需 >1 小时）
+const SLOW_DOWNLOAD_MS = 300000;  // 下载 5 分钟内未达 5% 即判定过慢，切换手动引导
 
 /** 下载进度信息（供 UI 展示字节数/速率，避免只看整数百分比而长时间停在 0%） */
 export interface GpuDownloadProgress {
@@ -71,6 +77,64 @@ interface SourceProbe {
   total: number;      // 文件总字节数
   speed: number;      // 测速 bytes/s
   supportsRange: boolean; // 支持 Range（206）→ 可参与分片
+}
+
+/**
+ * 网络过慢错误：全部镜像源速率太低，自动下载需要数小时。
+ * 携带可手动下载的 URL 与本地期望文件名，供 UI 引导用户用浏览器/下载器下载。
+ */
+export class SlowNetworkError extends Error {
+  readonly url: string;
+  readonly fileName: string;
+  readonly expectedSize: number;
+  constructor(url: string, fileName: string, expectedSize: number) {
+    super(`网络较慢：自动下载预计耗时过长，建议使用浏览器/下载器手动下载`);
+    this.name = "SlowNetworkError";
+    this.url = url;
+    this.fileName = fileName;
+    this.expectedSize = expectedSize;
+  }
+}
+
+/** 用户手动下载 zip 的本地探测候选目录（下载/桌面/临时） */
+function manualDownloadCandidates(): string[] {
+  const dirs: string[] = [];
+  const home = os.homedir();
+  dirs.push(path.join(home, "Downloads"));
+  dirs.push(path.join(home, "Desktop"));
+  dirs.push(path.join(home, "下载"));
+  dirs.push(path.join(home, "桌面"));
+  dirs.push(os.tmpdir());
+  if (process.env.USERPROFILE) {
+    dirs.push(path.join(process.env.USERPROFILE, "Downloads"));
+    dirs.push(path.join(process.env.USERPROFILE, "Desktop"));
+  }
+  return Array.from(new Set(dirs));
+}
+
+/**
+ * 扫描常见目录，找用户手动下载好的 GPU zip（支持别名：daisy- 前缀 / whisper-cublas-*）。
+ * 找到返回完整路径；找不到返回 null。
+ */
+export function findLocalGpuZip(): string | null {
+  const names = [`daisy-${ZIP_NAME}`, ZIP_NAME];
+  for (const dir of manualDownloadCandidates()) {
+    for (const name of names) {
+      const full = path.join(dir, name);
+      try {
+        if (fs.existsSync(full) && fs.statSync(full).size > 1024 * 1024) {
+          // 快速校验 zip 魔数，防止损坏的残留文件被误用
+          const fd = fs.openSync(full, "r");
+          const buf = Buffer.alloc(4);
+          try { fs.readSync(fd, buf, 0, 4, 0); } finally { fs.closeSync(fd); }
+          if (buf[0] === 0x50 && buf[1] === 0x4b) {
+            return full;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+  }
+  return null;
 }
 
 /** 跟随重定向发起 HTTPS GET，返回最终响应与最终 URL */
@@ -241,11 +305,20 @@ function validateZip(zipPath: string): void {
  * 1. 所有源【并行】探测连接与测速（≤4s），瞬时找出可用源，绝不串行干等；
  * 2. 取最快的若干源，按 16MB 分片【并发下载】——哪个源快谁多干活，带宽聚合；
  * 3. 任一分片失败立即【换源续传】（Range 断点），不重头再来；
- * 4. 全部分片完成后按序拼接 + 校验 zip 魔数。
+ * 4. 探测后全部源速率过低（预计 >1 小时）时抛 SlowNetworkError，
+ *    引导用户用浏览器/下载器手动下载（断点续传+多线程远快于 Node https）。
+ * 5. 全部分片完成后按序拼接 + 校验 zip 魔数。
  */
 export async function downloadWhisperGpuComponent(
   onProgress?: (progress: GpuDownloadProgress) => void
 ): Promise<string> {
+  // 优先复用用户手动下载好的 zip：下载目录/桌面/临时目录里有完整文件就直接部署
+  const local = findLocalGpuZip();
+  if (local) {
+    log(`whisperGpu: found locally downloaded zip at ${local}, skipping download`);
+    return local;
+  }
+
   const sources = [...GH_MIRRORS.map((m) => `${m}${ZIP_URL}`), ZIP_URL];
   const zipPath = path.join(os.tmpdir(), `daisy-${ZIP_NAME}`);
 
@@ -263,6 +336,12 @@ export async function downloadWhisperGpuComponent(
   );
 
   const total = available[0].total;
+  // 聚合估算速率（最快的 MAX_SOURCES 个源 × 并发数），低于阈值则手动下载
+  const bestSources = available.slice(0, MAX_SOURCES);
+  const aggSpeed = bestSources.reduce((sum, p) => sum + p.speed * WORKERS_PER_SOURCE, 0);
+  if (aggSpeed < SLOW_SOURCE_KBPS * 1024) {
+    throw new SlowNetworkError(ZIP_URL, ZIP_NAME, total);
+  }
   const rangeSources = available.filter((p) => p.supportsRange);
   const workers: { url: string }[] = [];
 
@@ -291,10 +370,26 @@ export async function downloadWhisperGpuComponent(
     };
 
     const t0 = Date.now();
+    // 慢速看门狗：5 分钟内未达 5% 说明实际速率远低于探测值（探测快慢仅 512KB），
+    // 立即中止并转手动下载，避免用户再等数小时。
+    const abort = { current: false };
+    const abortReason = { slow: false };
+    const slowTimer = setTimeout(() => {
+      const elapsed = Math.max(1, (Date.now() - t0) / 1000);
+      const kbps = Math.round(report.received / elapsed / 1024);
+      const pct = report.received / total;
+      if (pct < 0.05) {
+        logError(`whisperGpu: download too slow (${kbps}KB/s, ${(pct * 100).toFixed(1)}% in ${Math.round(elapsed)}s), switching to manual guidance`, undefined);
+        abort.current = true;
+        abortReason.slow = true;
+      }
+    }, SLOW_DOWNLOAD_MS);
+    slowTimer.unref?.();
+
     await Promise.all(
       workers.map(async (worker, wi) => {
         let part: { index: number; start: number; end: number; done: boolean } | null;
-        while ((part = pickNext()) !== null) {
+        while ((part = pickNext()) !== null && !abort.current) {
           const partIdx = part.index;
           let success = false;
           // 换源重试：先从最快的源开始，失败后轮换其余源
@@ -308,7 +403,7 @@ export async function downloadWhisperGpuComponent(
               logError(`whisperGpu: part ${partIdx} from ${src.url} failed`, err);
             }
           }
-          if (!success) {
+          if (!success && !abort.current) {
             throw new Error(`下载失败：分片 ${partIdx} 所有源重试均失败`);
           }
           part.done = true;
@@ -325,6 +420,16 @@ export async function downloadWhisperGpuComponent(
         }
       })
     );
+    clearTimeout(slowTimer);
+
+    if (abort.current) {
+      // 清理半成品分片，避免下次误用
+      for (const p of partPaths) { try { fs.unlinkSync(p); } catch { /* ignore */ } }
+      if (abortReason.slow) {
+        throw new SlowNetworkError(ZIP_URL, ZIP_NAME, total);
+      }
+      throw new Error("下载被中止");
+    }
 
     await mergeParts(zipPath, partPaths);
     log(`whisperGpu: merged ${partCount} parts -> ${zipPath}`);

@@ -74,6 +74,16 @@ export interface DiriAPI {
   onHideWindow: (cb: () => void) => () => void;
   onStartRecording: (cb: () => void) => () => void;
   onStopRecording: (cb: () => void) => () => void;
+
+  // Float window appearance (skin presets + custom avatar overlay)
+  getFloatAppearance: () => Promise<{ skin: string; avatarPath: string }>;
+  setFloatAppearance: (
+    appearance: { skin?: string; avatarPath?: string }
+  ) => Promise<{ success: boolean; error?: string; skin?: string; avatarPath?: string }>;
+  onFloatAppearanceChanged: (
+    cb: (appearance: { skin: string; avatarPath: string }) => void
+  ) => () => void;
+  chooseAvatarFile: () => Promise<{ success: boolean; canceled: boolean; path: string; error?: string }>;
 }
 
 declare global {

@@ -1,110 +1,241 @@
 /* global diriAPI */
 
-// ── 状态色板 ──
+// ── 状态色板（设计文档 v3：明亮能量系，替代旧版暗沉霓虹）──
+// 设计文档状态色体系：idle 能量青、thinking 星云紫、listening 琥珀金、
+// speaking 青渐变、error 警示红、sleep/静音 深灰。每个状态带三点布光色：
+// keyLight 主光（左上暖） / fillLight 辅光（右下冷） / rimLight 轮廓光（后侧）。
 const palettes = {
   idle: {
-    main: "#6C6EF5",
-    mid: "#30268a",
-    dark: "#140c38",
-    deepDark: "#0d0728",
-    highlight: "#C5C1FF",
-    glow: "rgba(108, 110, 245, 0.45)",
+    main: "#00F0FF",
+    mid: "#0088FF",
+    dark: "#0b1f3a",
+    deepDark: "#050d1c",
+    highlight: "#D6FBFF",
+    glow: "rgba(0, 240, 255, 0.5)",
     label: "待命",
-    glowOpacity: 0.22,
-    filaments: ["#6C6EF5", "#EC4899", "#8B5CF6"],
-    blobs: ["#6C6EF5", "#8B5CF6", "#EC4899"],
+    glowOpacity: 0.3,
+    filaments: ["#00F0FF", "#00B3FF", "#7DE8FF"],
+    blobs: ["#00F0FF", "#0088FF", "#38E8FF"],
+    keyLight: "rgba(255, 252, 214, 0.5)",
+    fillLight: "rgba(80, 140, 255, 0.35)",
+    rimLight: "rgba(0, 240, 255, 0.4)",
     linearGradient: {
-      topLeft: "rgba(108, 110, 245, 0.85)",
-      middle: "rgba(139, 92, 246, 0.50)",
-      bottomRight: "rgba(236, 72, 153, 0.20)"
+      topLeft: "rgba(0, 240, 255, 0.9)",
+      middle: "rgba(0, 136, 255, 0.5)",
+      bottomRight: "rgba(125, 232, 255, 0.2)"
     }
   },
   listening: {
-    main: "#00A2FF",
-    mid: "#184594",
-    dark: "#0a1738",
-    deepDark: "#02071a",
-    highlight: "#B8DBFF",
-    glow: "rgba(0, 162, 255, 0.55)",
+    main: "#FBBF24",
+    mid: "#F59E0B",
+    dark: "#3a2a08",
+    deepDark: "#1a1203",
+    highlight: "#FFF3C4",
+    glow: "rgba(251, 191, 36, 0.55)",
     label: "聆听中",
-    glowOpacity: 0.34,
-    filaments: ["#00A2FF", "#38BDF8", "#7DD3FC"],
-    blobs: ["#00A2FF", "#38BDF8", "#7DD3FC"],
+    glowOpacity: 0.4,
+    filaments: ["#FBBF24", "#FDE68A", "#F59E0B"],
+    blobs: ["#FBBF24", "#FDE68A", "#F59E0B"],
+    keyLight: "rgba(255, 248, 214, 0.55)",
+    fillLight: "rgba(255, 150, 60, 0.3)",
+    rimLight: "rgba(253, 230, 138, 0.45)",
     linearGradient: {
-      topLeft: "rgba(0, 162, 255, 0.85)",
-      middle: "rgba(56, 189, 248, 0.50)",
-      bottomRight: "rgba(125, 211, 252, 0.20)"
+      topLeft: "rgba(251, 191, 36, 0.9)",
+      middle: "rgba(245, 158, 11, 0.5)",
+      bottomRight: "rgba(253, 230, 138, 0.2)"
     }
   },
   thinking: {
-    main: "#FF8033",
-    mid: "#9e4313",
-    dark: "#3d1404",
-    deepDark: "#1a0600",
-    highlight: "#FFE0C0",
-    glow: "rgba(255, 128, 51, 0.55)",
+    main: "#8B5CF6",
+    mid: "#6D28D9",
+    dark: "#1e1240",
+    deepDark: "#0e081f",
+    highlight: "#EDE4FF",
+    glow: "rgba(139, 92, 246, 0.55)",
     label: "思考中",
-    glowOpacity: 0.34,
-    filaments: ["#FF8033", "#FF9955", "#FFBB77"],
-    blobs: ["#FF8033", "#FF9955", "#FFBB77"],
+    glowOpacity: 0.4,
+    filaments: ["#8B5CF6", "#A78BFA", "#C4B5FD"],
+    blobs: ["#8B5CF6", "#A78BFA", "#C4B5FD"],
+    keyLight: "rgba(245, 238, 255, 0.5)",
+    fillLight: "rgba(180, 120, 255, 0.3)",
+    rimLight: "rgba(167, 139, 250, 0.45)",
     linearGradient: {
-      topLeft: "rgba(255, 128, 51, 0.90)",
-      middle: "rgba(255, 128, 51, 0.60)",
-      bottomRight: "rgba(255, 128, 51, 0.22)"
+      topLeft: "rgba(139, 92, 246, 0.9)",
+      middle: "rgba(109, 40, 217, 0.5)",
+      bottomRight: "rgba(196, 181, 253, 0.2)"
     }
   },
   speaking: {
-    main: "#0FC882",
-    mid: "#0e5a37",
-    dark: "#032112",
-    deepDark: "#010d06",
-    highlight: "#B0FFD4",
-    glow: "rgba(15, 200, 130, 0.55)",
+    main: "#00E5A8",
+    mid: "#00C08C",
+    dark: "#0a2a22",
+    deepDark: "#041310",
+    highlight: "#B8FFE4",
+    glow: "rgba(0, 229, 168, 0.55)",
     label: "播报中",
-    glowOpacity: 0.34,
-    filaments: ["#0FC882", "#19D291", "#37EBB4"],
-    blobs: ["#0FC882", "#19D291", "#37EBB4"],
+    glowOpacity: 0.42,
+    filaments: ["#00E5A8", "#00F0FF", "#8AFFE0"],
+    blobs: ["#00E5A8", "#00F0FF", "#8AFFE0"],
+    keyLight: "rgba(214, 255, 244, 0.55)",
+    fillLight: "rgba(0, 160, 220, 0.32)",
+    rimLight: "rgba(0, 240, 255, 0.5)",
     linearGradient: {
-      topLeft: "rgba(15, 200, 130, 0.82)",
-      middle: "rgba(25, 210, 145, 0.48)",
-      bottomRight: "rgba(55, 235, 180, 0.18)"
+      topLeft: "rgba(0, 229, 168, 0.9)",
+      middle: "rgba(0, 240, 255, 0.5)",
+      bottomRight: "rgba(138, 255, 224, 0.2)"
     }
   },
   error: {
     main: "#F56060",
-    mid: "#8a1b1b",
-    dark: "#380606",
-    deepDark: "#170101",
-    highlight: "#FFC0C0",
+    mid: "#DC2626",
+    dark: "#3a0a0a",
+    deepDark: "#180303",
+    highlight: "#FFC9C9",
     glow: "rgba(245, 96, 96, 0.55)",
     label: "出错",
-    glowOpacity: 0.34,
-    filaments: ["#EF4444", "#FBBF24", "#EC4899"],
-    blobs: ["#F56060", "#DC2626", "#8B5CF6"],
+    glowOpacity: 0.4,
+    filaments: ["#F56060", "#FF9E9E", "#FBBF24"],
+    blobs: ["#F56060", "#DC2626", "#FF9E9E"],
+    keyLight: "rgba(255, 228, 228, 0.5)",
+    fillLight: "rgba(180, 40, 40, 0.3)",
+    rimLight: "rgba(255, 158, 158, 0.45)",
     linearGradient: {
-      topLeft: "rgba(245, 96, 96, 0.85)",
-      middle: "rgba(239, 68, 68, 0.50)",
-      bottomRight: "rgba(251, 191, 36, 0.20)"
+      topLeft: "rgba(245, 96, 96, 0.9)",
+      middle: "rgba(220, 38, 38, 0.5)",
+      bottomRight: "rgba(251, 191, 36, 0.2)"
     }
   },
   muted: {
-    main: "#8B8DA8",
-    mid: "#4a4c66",
-    dark: "#1c1d2e",
-    deepDark: "#0d0e17",
-    highlight: "#D6D7EA",
-    glow: "rgba(139, 141, 168, 0.40)",
+    main: "#6B7280",
+    mid: "#4B5563",
+    dark: "#1c2128",
+    deepDark: "#0d1014",
+    highlight: "#D6DCE4",
+    glow: "rgba(107, 114, 128, 0.4)",
     label: "已静音",
-    glowOpacity: 0.22,
-    filaments: ["#8B8DA8", "#A7A9C4", "#5B5D7A"],
-    blobs: ["#8B8DA8", "#6C6EF5", "#A7A9C4"],
+    glowOpacity: 0.25,
+    filaments: ["#6B7280", "#9CA3AF", "#4B5563"],
+    blobs: ["#6B7280", "#00F0FF", "#9CA3AF"],
+    keyLight: "rgba(226, 232, 240, 0.4)",
+    fillLight: "rgba(80, 90, 110, 0.28)",
+    rimLight: "rgba(156, 163, 175, 0.35)",
     linearGradient: {
-      topLeft: "rgba(139, 141, 168, 0.85)",
-      middle: "rgba(108, 110, 245, 0.45)",
-      bottomRight: "rgba(74, 76, 102, 0.30)"
+      topLeft: "rgba(107, 114, 128, 0.85)",
+      middle: "rgba(0, 240, 255, 0.4)",
+      bottomRight: "rgba(75, 85, 99, 0.3)"
     }
   }
 };
+
+// ── 皮肤预设（设置页可切换，覆盖主状态色形成不同视觉主题）──
+// 每个皮肤只覆盖各状态的 main/mid/highlight/glow，整体替换 palette 时其余字段沿用。
+const skins = {
+  // 默认能量青：idle 青蓝能量 + 琥珀聆听 + 星云紫思考（设计文档原色）
+  energy: null,
+  // 极光紫：全状态偏紫罗兰，霓虹冷艳
+  aurora: {
+    idle:     { main: "#8B5CF6", mid: "#6D28D9", highlight: "#EDE4FF", glow: "rgba(139, 92, 246, 0.5)" },
+    listening:{ main: "#A78BFA", mid: "#7C3AED", highlight: "#F1E8FF", glow: "rgba(167, 139, 250, 0.55)" },
+    thinking: { main: "#C084FC", mid: "#9333EA", highlight: "#F5E8FF", glow: "rgba(192, 132, 252, 0.55)" },
+    speaking: { main: "#38BDF8", mid: "#0EA5E9", highlight: "#D8F4FF", glow: "rgba(56, 189, 248, 0.55)" },
+    error:    { main: "#F56060", mid: "#DC2626", highlight: "#FFC9C9", glow: "rgba(245, 96, 96, 0.55)" },
+    muted:    { main: "#6B7280", mid: "#4B5563", highlight: "#D6DCE4", glow: "rgba(107, 114, 128, 0.4)" },
+  },
+  // 暖阳琥珀：金黄活力主题
+  amber: {
+    idle:     { main: "#F59E0B", mid: "#D97706", highlight: "#FFEFC9", glow: "rgba(245, 158, 11, 0.5)" },
+    listening:{ main: "#FBBF24", mid: "#F59E0B", highlight: "#FFF3C4", glow: "rgba(251, 191, 36, 0.55)" },
+    thinking: { main: "#F97316", mid: "#EA580C", highlight: "#FFE3CD", glow: "rgba(249, 115, 22, 0.55)" },
+    speaking: { main: "#F59E0B", mid: "#D97706", highlight: "#FFEFC9", glow: "rgba(245, 158, 11, 0.55)" },
+    error:    { main: "#F56060", mid: "#DC2626", highlight: "#FFC9C9", glow: "rgba(245, 96, 96, 0.55)" },
+    muted:    { main: "#6B7280", mid: "#4B5563", highlight: "#D6DCE4", glow: "rgba(107, 114, 128, 0.4)" },
+  },
+  // 翡翠深绿：沉稳科技主题
+  emerald: {
+    idle:     { main: "#10B981", mid: "#059669", highlight: "#D1FAE5", glow: "rgba(16, 185, 129, 0.5)" },
+    listening:{ main: "#34D399", mid: "#10B981", highlight: "#D7FBEA", glow: "rgba(52, 211, 153, 0.55)" },
+    thinking: { main: "#2DD4BF", mid: "#14B8A6", highlight: "#D5FBF5", glow: "rgba(45, 212, 191, 0.55)" },
+    speaking: { main: "#10B981", mid: "#059669", highlight: "#D1FAE5", glow: "rgba(16, 185, 129, 0.55)" },
+    error:    { main: "#F56060", mid: "#DC2626", highlight: "#FFC9C9", glow: "rgba(245, 96, 96, 0.55)" },
+    muted:    { main: "#6B7280", mid: "#4B5563", highlight: "#D6DCE4", glow: "rgba(107, 114, 128, 0.4)" },
+  },
+};
+
+// 当前生效皮肤（null = 默认能量青）。皮肤字段合并覆盖到各状态 palette。
+let activeSkin = null;
+// 默认 palette 快照：皮肤应用会就地改写 palettes，切回默认时必须用快照还原。
+const defaultPalettes = JSON.parse(JSON.stringify(palettes));
+function restoreDefaultPalettes() {
+  for (const state of Object.keys(defaultPalettes)) {
+    palettes[state] = JSON.parse(JSON.stringify(defaultPalettes[state]));
+  }
+}
+function applySkin(skin) {
+  if (skin === activeSkin) return;
+  activeSkin = skin;
+  const skinDef = skins[skin] || null;
+  if (!skinDef) {
+    // 恢复默认：用内置 palettes（已含设计文档原色），重新上色当前状态
+    restoreDefaultPalettes();
+    applyStateVisuals(currentState);
+    return;
+  }
+  for (const state of Object.keys(skinDef)) {
+    const pal = palettes[state];
+    if (!pal) continue;
+    const override = skinDef[state];
+    pal.main = override.main;
+    pal.mid = override.mid;
+    pal.highlight = override.highlight;
+    pal.glow = override.glow;
+    // 派生：dark/deepDark 用 mid 的暗化版本；布光色随主色
+    pal.dark = shadeHex(override.mid, 0.35);
+    pal.deepDark = shadeHex(override.mid, 0.16);
+    pal.keyLight = hexToRgba(override.highlight, 0.5);
+    pal.fillLight = hexToRgba(override.main, 0.3);
+    pal.rimLight = hexToRgba(override.highlight, 0.45);
+    pal.filaments = [override.main, override.main, override.highlight];
+    pal.blobs = [override.main, override.highlight, override.mid];
+  }
+  applyStateVisuals(currentState);
+}
+
+// hex -> "rgba(r, g, b, a)"（皮肤布光色生成用）
+function hexToRgba(hex, alpha) {
+  const rgb = hexToRgb(hex);
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+}
+
+// hex 明暗调节：f>1 提亮、0<f<1 压暗（派生 dark/deepDark 基底）
+function shadeHex(hex, f) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgb(${Math.round(r * f)}, ${Math.round(g * f)}, ${Math.round(b * f)})`;
+}
+
+// ── 自定义头像叠加（「潇洒哥 3D 动感头像」类需求）──
+// 头像图片叠加在球体表面：带 3D 倾斜跟随 + 呼吸缩放，随状态色淡入淡出，
+// 不改变球体本身的能量渲染（球体仍是主体，头像是表面材质层）。
+let avatarImage = null;
+let avatarImageUrl = null;
+function loadAvatar(path) {
+  if (avatarImageUrl === path) return;
+  avatarImageUrl = path;
+  avatarImage = null;
+  if (!path) return;
+  const img = new Image();
+  img.onload = () => { avatarImage = img; };
+  img.onerror = () => { logToMain("FLOAT_LOG: avatar load failed: " + path); avatarImage = null; };
+  img.src = path.startsWith("file:") ? path : encodeURI("file:///" + String(path).split("\\").join("/").replace(/^\/+/, ""));
+}
+
+diriAPI.getFloatAppearance().then((appearance) => {
+  applySkin(appearance.skin);
+  loadAvatar(appearance.avatarPath);
+}).catch(() => {});
+diriAPI.onFloatAppearanceChanged((appearance) => {
+  applySkin(appearance.skin);
+  loadAvatar(appearance.avatarPath);
+});
 
 const targetConfigs = {
   idle:      { speed: 0.35, spread: 0.46, pulse: 0.04, rotation: 0.06 },
@@ -113,6 +244,16 @@ const targetConfigs = {
   speaking:  { speed: 0.50, spread: 0.48, pulse: 0.08, rotation: 0.08 },
   error:     { speed: 0.70, spread: 0.55, pulse: 0.10, rotation: 0.18 },
   muted:     { speed: 0.22, spread: 0.38, pulse: 0.03, rotation: 0.04 }
+};
+
+// ── 弹性形变物理（设计文档「静若处子，动若脱兔」）──
+// 球体缩放/倾斜/呼吸不再用硬性 lerp，而是弹簧-阻尼动力学：
+// 状态切换时目标值突变，球体带惯性冲向目标并在目标附近来回弹两下才稳定，
+// 产生真实的「弹性果冻」体感（比线性插值更有生命力）。
+const spring = (val, vel, target, stiffness, damping) => {
+  vel = (vel + (target - val) * stiffness) * damping;
+  val += vel;
+  return { val, vel };
 };
 
 // ── 运行状态 ──
@@ -140,6 +281,11 @@ let uiPressScale = 1.0;
 let isPointerDownOnOrb = false;
 // 悬停能量注入：hover 时核心更亮、轨道粒子加速（微交互质感）
 let hoverEnergy = 0.0;
+
+// 弹性形变速度缓存（spring 动力学）
+let scaleVel = 0;
+let tiltXVel = 0;
+let tiltYVel = 0;
 
 // 状态切换能量裂纹（神秘符文感：状态变化时核心辐射亮纹后隐去；error 态持续显现）
 let fracture = null;
@@ -596,7 +742,10 @@ function render() {
   if (currentState === 'speaking') baseScale += bands.low * 0.16;
   else if (currentState === 'listening') baseScale += bands.low * 0.10;
   const breath = 1.0 + Math.sin(time * 0.4) * animPulse;
-  orbScale = lerp(orbScale, baseScale * breath, 0.04);
+  // 弹性形变：缩放带弹簧惯性（状态切换/音量变化时果冻式弹跳，比硬 lerp 更有体感）
+  const scaleResult = spring(orbScale, scaleVel, baseScale * breath, 0.02, 0.94);
+  orbScale = scaleResult.val;
+  scaleVel = scaleResult.vel;
   wakeScale = lerp(wakeScale, targetWakeScale, 0.04);
 
   // 交互缩放：hover 放大 1.06、按下 0.94、迷你形态 1.08，全部有界 lerp 永不累积。
@@ -615,8 +764,13 @@ function render() {
   spinBoost = lerp(spinBoost, 0, 0.02);
   const targetTiltX = cursorGlowActive ? (lastPointerV - 0.5) * 0.70 : 0;
   const targetTiltY = cursorGlowActive ? (lastPointerU - 0.5) * 0.85 : 0;
-  tiltX = lerp(tiltX, targetTiltX, 0.08);
-  tiltY = lerp(tiltY, targetTiltY, 0.08);
+  // 视差倾斜同样走弹簧：鼠标移走后球体带惯性回正并轻微弹跳，立体感更真实
+  const tiltXRes = spring(tiltX, tiltXVel, targetTiltX, 0.06, 0.90);
+  tiltX = tiltXRes.val;
+  tiltXVel = tiltXRes.vel;
+  const tiltYRes = spring(tiltY, tiltYVel, targetTiltY, 0.06, 0.90);
+  tiltY = tiltYRes.val;
+  tiltYVel = tiltYRes.vel;
 
   let shakeX = 0, shakeY = 0;
   if (currentState === 'error') {
@@ -646,6 +800,8 @@ function render() {
   drawDeepSpaceCore(cx, cy, radius, currentState, bands);
   drawNeonFilaments(cx, cy, radius, bands.mid, currentState);
   draw3DPointSphere(cx, cy, radius, currentState);
+  drawAvatarOverlay(cx, cy, radius, currentState);
+  drawThreePointLighting(cx, cy, radius, currentState, bands);
   drawBaseReflection(cx, cy, radius);
   draw3DOrbits(cx, cy, radius, currentState);
   drawRipples(cx, cy, radius, currentState);
@@ -920,18 +1076,98 @@ function draw3DPointSphere(cx, cy, radius, activeState) {
   for (let i = 0; i < n; i++) {
     const d = proj[i];
     const depth01 = (d.z + 1) / 2;
-    const size = 1.15 * d.depth + 0.4;
-    const alpha = 0.10 + depth01 * 0.42;
+    const size = 1.35 * d.depth + 0.35;
+    const alpha = 0.06 + depth01 * 0.55;
     // 深处偏状态色，近处偏高亮
     const mix = depth01;
-    const cr = Math.floor(lerp(rgb.r, hrgb.r, mix * 0.85));
-    const cg = Math.floor(lerp(rgb.g, hrgb.g, mix * 0.85));
-    const cb = Math.floor(lerp(rgb.b, hrgb.b, mix * 0.85));
+    const cr = Math.floor(lerp(rgb.r, hrgb.r, mix * 0.9));
+    const cg = Math.floor(lerp(rgb.g, hrgb.g, mix * 0.9));
+    const cb = Math.floor(lerp(rgb.b, hrgb.b, mix * 0.9));
     ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`;
     ctx.beginPath();
     ctx.arc(d.x, d.y, size, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.restore();
+}
+
+/** 三点布光（设计文档核心：让球体呈现真实立体材质而非平面渐变）。
+ *  主光在左上方（暖白）、辅光在右下方（冷色状态光）、轮廓光在球体左上边缘。
+ *  叠加在 3D 点云之上，强化「受光面亮、背光面暗、边缘有轮廓」的立体感。 */
+function drawThreePointLighting(cx, cy, radius, activeState, bands) {
+  const palette = palettes[activeState] || palettes.idle;
+  const vol = activeState === "speaking" && bands ? bands.high : 0;
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+
+  // 1. 主光（左上暖白）：大范围柔光罩，让受光面整体提亮偏暖
+  const keyGrad = ctx.createRadialGradient(
+    cx - radius * 0.38, cy - radius * 0.42, 0,
+    cx - radius * 0.38, cy - radius * 0.42, radius * 1.05
+  );
+  keyGrad.addColorStop(0, palette.keyLight);
+  keyGrad.addColorStop(0.55, "rgba(255,255,255,0.10)");
+  keyGrad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = keyGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 2. 辅光（右下冷色）：补充阴影面的状态色，让背光面带环境反光而不死黑
+  const fillGrad = ctx.createRadialGradient(
+    cx + radius * 0.42, cy + radius * 0.46, 0,
+    cx + radius * 0.42, cy + radius * 0.46, radius * 0.95
+  );
+  fillGrad.addColorStop(0, palette.fillLight);
+  fillGrad.addColorStop(0.6, "rgba(255,255,255,0.05)");
+  fillGrad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = fillGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 3. 轮廓光（左上边缘描边）：主光对侧产生逆光轮廓，说话时随音量增亮
+  const rimBoost = activeState === "speaking" ? vol * 0.18 : 0;
+  const rimAlpha = 0.22 + rimBoost + hoverEnergy * 0.08;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius - 0.6, -Math.PI * 0.95, -Math.PI * 0.05);
+  ctx.strokeStyle = palette.rimLight.replace(/[\d.]+\)$/, `${Math.min(0.65, rimAlpha)})`);
+  ctx.lineWidth = 2.2 + vol * 1.4;
+  ctx.lineCap = "round";
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/** 自定义头像叠加层：图片裁成圆形贴到球面上，随 3D 倾斜做轻微视差、随音量呼吸。
+ *  头像本身半透明融于能量球，保持球体立体感不丢失。无头像时直接跳过（零开销）。 */
+function drawAvatarOverlay(cx, cy, radius, activeState) {
+  if (!avatarImage || avatarImage.width <= 0) return;
+  const palette = palettes[activeState] || palettes.idle;
+  // 随状态淡入淡出：待命弱、激活态强（头像可辨识但不抢能量球主体）
+  const stateAlpha = activeState === "idle" || activeState === "muted" ? 0.62 : 0.80;
+  const breathe = 1 + Math.sin(time * 0.5) * 0.02;
+
+  ctx.save();
+  // 头像按球面透视轻度压缩，形成「贴纸贴在球上」的立体感
+  const tiltCompress = 1 - Math.abs(Math.sin(tiltY)) * 0.18;
+  const avR = radius * 0.68 * breathe;
+  ctx.globalAlpha = stateAlpha;
+  ctx.beginPath();
+  ctx.arc(cx, cy, avR, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.drawImage(
+    avatarImage,
+    cx - avR, cy - avR * (2 - tiltCompress),
+    avR * 2, avR * 2 * tiltCompress
+  );
+  // 头像外圈细描边，融入球体材质
+  ctx.beginPath();
+  ctx.arc(cx, cy, avR, 0, Math.PI * 2);
+  ctx.strokeStyle = palette.highlight;
+  ctx.globalAlpha = stateAlpha * 0.35;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -958,11 +1194,11 @@ function drawDeepSpaceCore(cx, cy, radius, activeState, bands) {
 
   const coreAmp = 0.5 + hoverEnergy * 0.5; // hover 时核心更亮
 
-  // 2. 白色等离子核心（内部体积光，深空能量的"燃点"）
-  const coreR = radius * 0.32;
+  // 2. 白色等离子核心（内部体积光，深空能量的"燃点"）——设计文档要求能量核明亮通透
+  const coreR = radius * 0.36;
   const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
-  coreGrad.addColorStop(0, `rgba(255,255,255,${0.95 * coreAmp})`);
-  coreGrad.addColorStop(0.4, `rgba(255,255,255,${0.42 * coreAmp})`);
+  coreGrad.addColorStop(0, `rgba(255,255,255,${1.0 * coreAmp})`);
+  coreGrad.addColorStop(0.4, `rgba(255,255,255,${0.55 * coreAmp})`);
   coreGrad.addColorStop(1, "rgba(255,255,255,0)");
   ctx.save();
   ctx.globalCompositeOperation = "screen";
@@ -972,10 +1208,10 @@ function drawDeepSpaceCore(cx, cy, radius, activeState, bands) {
   ctx.fill();
 
   // 3. 状态色辉光（核心向外扩散，给等离子体染色）
-  const glowR = radius * 0.66;
+  const glowR = radius * 0.72;
   const glowGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
-  glowGrad.addColorStop(0, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${0.52 * coreAmp})`);
-  glowGrad.addColorStop(0.5, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${0.16 * coreAmp})`);
+  glowGrad.addColorStop(0, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${0.60 * coreAmp})`);
+  glowGrad.addColorStop(0.5, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${0.20 * coreAmp})`);
   glowGrad.addColorStop(1, "rgba(255,255,255,0)");
   ctx.fillStyle = glowGrad;
   ctx.beginPath();

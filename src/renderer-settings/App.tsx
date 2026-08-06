@@ -16,6 +16,7 @@ import {
   History,
   ExternalLink,
   ScanEye,
+  Palette,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { IdleOrb } from "./components/IdleOrb";
@@ -46,6 +47,8 @@ interface SettingsState {
   VISUAL_BACKUP_API_KEY: string;
   VISUAL_BACKUP_BASE_URL: string;
   VISUAL_BACKUP_MODEL: string;
+  FLOAT_SKIN: string;
+  FLOAT_AVATAR_PATH: string;
 }
 
 interface ChatEntry {
@@ -76,6 +79,8 @@ const DEFAULT_SETTINGS: SettingsState = {
   VISUAL_BACKUP_API_KEY: "",
   VISUAL_BACKUP_BASE_URL: "https://api.siliconflow.cn/v1",
   VISUAL_BACKUP_MODEL: "Qwen/Qwen2.5-VL-7B-Instruct",
+  FLOAT_SKIN: "energy",
+  FLOAT_AVATAR_PATH: "",
 };
 
 function rateToStr(n: number): string {
@@ -135,7 +140,9 @@ export default function App() {
   const [gpuReceived, setGpuReceived] = useState<number>(0);
   const [gpuTotal, setGpuTotal] = useState<number>(0);
   const [gpuSpeed, setGpuSpeed] = useState<number>(0);
-  const [gpuPhase, setGpuPhase] = useState<"download" | "extract" | "">("");
+  const [gpuPhase, setGpuPhase] = useState<"download" | "extract" | "manual" | "manual-done" | "">("");
+  const [gpuManualUrl, setGpuManualUrl] = useState<string>("");
+  const [gpuManualFileName, setGpuManualFileName] = useState<string>("");
   const isFirecrawlActive = settings.FIRECRAWL_API_KEY.trim().length > 0;
 
   const statusTimerRef = useRef<number | null>(null);
@@ -178,6 +185,8 @@ export default function App() {
         if (cfg.VISUAL_BACKUP_API_KEY !== undefined) merged.VISUAL_BACKUP_API_KEY = cfg.VISUAL_BACKUP_API_KEY;
         if (cfg.VISUAL_BACKUP_BASE_URL !== undefined) merged.VISUAL_BACKUP_BASE_URL = cfg.VISUAL_BACKUP_BASE_URL;
         if (cfg.VISUAL_BACKUP_MODEL !== undefined) merged.VISUAL_BACKUP_MODEL = cfg.VISUAL_BACKUP_MODEL;
+        if (cfg.FLOAT_SKIN !== undefined) merged.FLOAT_SKIN = cfg.FLOAT_SKIN || "energy";
+        if (cfg.FLOAT_AVATAR_PATH !== undefined) merged.FLOAT_AVATAR_PATH = cfg.FLOAT_AVATAR_PATH || "";
         try {
           merged.AUTO_LAUNCH = await window.diriAPI.getAutoLaunch();
         } catch {}
@@ -283,8 +292,14 @@ export default function App() {
       setGpuReceived(p.received || 0);
       setGpuTotal(p.total || 0);
       setGpuSpeed(p.speed || 0);
+      if (p.manualUrl) setGpuManualUrl(p.manualUrl);
+      if (p.manualFileName) setGpuManualFileName(p.manualFileName);
       if (p.percent >= 100 && p.phase === "extract") {
         showTemporaryStatus("✓ GPU 组件部署完成，重启 Daisy 后生效", "success");
+        setTimeout(() => refreshWhisperGpuStatus(), 500);
+      }
+      if (p.phase === "manual-done" && p.percent >= 100) {
+        showTemporaryStatus("✓ 手动下载的 GPU 组件已自动部署，重启 Daisy 后生效", "success");
         setTimeout(() => refreshWhisperGpuStatus(), 500);
       }
     });
@@ -301,6 +316,12 @@ export default function App() {
     try {
       const res = await window.diriAPI.downloadWhisperGpu();
       if (!res.success) {
+        if (res.manual) {
+          setGpuPhase("manual");
+          if (res.manualUrl) setGpuManualUrl(res.manualUrl);
+          if (res.manualFileName) setGpuManualFileName(res.manualFileName);
+          return;
+        }
         showTemporaryStatus("GPU 组件部署失败：" + (res.error || "未知错误"), "error");
       }
     } catch (err) {
@@ -323,6 +344,47 @@ export default function App() {
       showTemporaryStatus("移除失败：" + (res.error || "未知错误"), "error");
     }
     refreshWhisperGpuStatus();
+  };
+
+  // ==================== 悬浮球外观 ====================
+  const handleSkinChange = async (skin: string) => {
+    setSettings((prev) => ({ ...prev, FLOAT_SKIN: skin }));
+    try {
+      const res = await window.diriAPI.setFloatAppearance({ skin });
+      if (res.success) {
+        showTemporaryStatus(`已切换为「${res.skin}」皮肤，悬浮球已实时变色`, "success");
+      } else {
+        showTemporaryStatus("切换皮肤失败：" + (res.error || "未知错误"), "error");
+      }
+    } catch (err) {
+      showTemporaryStatus("切换皮肤异常：" + String(err), "error");
+    }
+  };
+
+  const handleChooseAvatar = async () => {
+    try {
+      const res = await window.diriAPI.chooseAvatarFile();
+      if (res.success && res.path) {
+        setSettings((prev) => ({ ...prev, FLOAT_AVATAR_PATH: res.path }));
+        await handleAvatarApply(res.path);
+      }
+    } catch (err) {
+      showTemporaryStatus("选择图片失败：" + String(err), "error");
+    }
+  };
+
+  const handleAvatarApply = async (path: string) => {
+    setSettings((prev) => ({ ...prev, FLOAT_AVATAR_PATH: path }));
+    try {
+      const res = await window.diriAPI.setFloatAppearance({ avatarPath: path });
+      if (res.success) {
+        showTemporaryStatus(path ? "✓ 头像已应用到悬浮球" : "已清除自定义头像", "success");
+      } else {
+        showTemporaryStatus("应用头像失败：" + (res.error || "未知错误"), "error");
+      }
+    } catch (err) {
+      showTemporaryStatus("应用头像异常：" + String(err), "error");
+    }
   };
 
   // ==================== 保存设置 ====================
@@ -490,6 +552,7 @@ export default function App() {
               { id: "wake", label: "语音唤醒", icon: Zap },
               { id: "vision", label: "视觉理解", icon: ScanEye },
               { id: "shortcut", label: "快捷键", icon: Keyboard },
+              { id: "appearance", label: "悬浮球外观", icon: Palette },
               { id: "system", label: "系统配置", icon: Settings },
             ].map((tab) => {
               const IconComp = tab.icon;
@@ -861,18 +924,46 @@ export default function App() {
                           </p>
                         )}
                         {whisperGpuStatus.downloading || gpuPhase ? (
-                          <div className="mt-2 flex items-center gap-2">
-                            <div className="flex-1 h-1.5 rounded-full bg-sky-100 overflow-hidden">
-                              <div className="h-full bg-sky-500 transition-all" style={{ width: `${gpuProgress}%` }} />
+                          gpuPhase === "manual" ? (
+                            <div className="mt-2 rounded-[10px] bg-amber-50 border border-amber-200 px-3 py-2.5">
+                              <p className="text-[11px] font-semibold text-amber-700 flex items-center gap-1">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" /> 网络较慢，自动下载预计需数小时
+                              </p>
+                              <p className="mt-1 text-[11px] leading-relaxed text-amber-700">
+                                建议用浏览器 / 下载器手动下载（支持断点续传，通常快很多），文件名
+                                <code className="mx-1 px-1 py-0.5 rounded bg-amber-100 text-[10px]">{gpuManualFileName || "whisper-cublas-*.zip"}</code>
+                                保存到<strong>下载</strong>或<strong>桌面</strong>文件夹。完成后 Daisy 会自动检测并部署，无需再操作。
+                              </p>
+                              {gpuManualUrl && (
+                                <a
+                                  href={gpuManualUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold transition-colors"
+                                >
+                                  <Download className="w-3.5 h-3.5" /> 打开下载页面
+                                </a>
+                              )}
+                              <p className="mt-2 text-[11px] text-amber-600">正在后台监控下载文件夹，检测到文件将自动部署…</p>
                             </div>
-                            <span className="text-[11px] text-sky-600 whitespace-nowrap">
-                              {gpuPhase === "extract"
-                                ? "解压中"
-                                : gpuTotal > 0
-                                  ? `下载中 ${gpuProgress}% · ${formatBytes(gpuReceived)}/${formatBytes(gpuTotal)}${gpuSpeed > 0 ? ` · ${formatBytes(gpuSpeed)}/s` : ""}`
-                                  : "正在连接下载源…"}
-                            </span>
-                          </div>
+                          ) : gpuPhase === "manual-done" ? (
+                            <div className="mt-2 rounded-[10px] bg-emerald-50 border border-emerald-200 px-3 py-2.5 text-[11px] font-semibold text-emerald-700">
+                              {gpuProgress >= 100 ? "✓ GPU 组件已自动部署，重启 Daisy 后生效" : "未检测到手动下载的文件，请确认已下载到 下载/桌面 文件夹"}
+                            </div>
+                          ) : (
+                            <div className="mt-2 flex items-center gap-2">
+                              <div className="flex-1 h-1.5 rounded-full bg-sky-100 overflow-hidden">
+                                <div className="h-full bg-sky-500 transition-all" style={{ width: `${gpuProgress}%` }} />
+                              </div>
+                              <span className="text-[11px] text-sky-600 whitespace-nowrap">
+                                {gpuPhase === "extract"
+                                  ? "解压中"
+                                  : gpuTotal > 0
+                                    ? `下载中 ${gpuProgress}% · ${formatBytes(gpuReceived)}/${formatBytes(gpuTotal)}${gpuSpeed > 0 ? ` · ${formatBytes(gpuSpeed)}/s` : ""}`
+                                    : "正在连接下载源…"}
+                              </span>
+                            </div>
+                          )
                         ) : whisperGpuStatus.nvidia === "driver-ok" && !whisperGpuStatus.deployed ? (
                           <button
                             onClick={handleDeployGpu}
@@ -1098,6 +1189,97 @@ export default function App() {
                           </span>
                         </button>
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {/* 悬浮球外观：皮肤预设 + 自定义头像 */}
+                {activeSection === "appearance" && (
+                  <div>
+                    <div className="mb-5 px-1">
+                      <h2 className="font-display font-semibold text-2xl tracking-tight text-slate-800">悬浮球外观</h2>
+                      <p className="text-[12px] text-slate-400 mt-1">选择视觉主题皮肤，或叠加一张自定义头像（如 3D 动感角色头像）</p>
+                    </div>
+                    <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-5">
+                      <div className="flex flex-col gap-2">
+                        <h4 className="text-sm font-semibold text-slate-800">主题皮肤</h4>
+                        <p className="text-[11px] text-slate-400">切换后悬浮球立即变色，无需重启</p>
+                        <div className="grid grid-cols-2 gap-3 mt-2">
+                          {[
+                            { id: "energy", name: "能量青", desc: "默认 · 青蓝能量", swatches: ["#00F0FF", "#0088FF", "#FBBF24", "#8B5CF6"] },
+                            { id: "aurora", name: "极光紫", desc: "紫罗兰霓虹", swatches: ["#8B5CF6", "#A78BFA", "#38BDF8", "#C084FC"] },
+                            { id: "amber", name: "暖阳琥珀", desc: "金黄活力", swatches: ["#F59E0B", "#FBBF24", "#F97316", "#F56060"] },
+                            { id: "emerald", name: "翡翠深绿", desc: "沉稳科技", swatches: ["#10B981", "#34D399", "#2DD4BF", "#F56060"] },
+                          ].map((skin) => (
+                            <button
+                              key={skin.id}
+                              onClick={() => handleSkinChange(skin.id)}
+                              className={`rounded-[16px] border p-3.5 text-left transition-all ${
+                                settings.FLOAT_SKIN === skin.id
+                                  ? "border-sky-400 bg-sky-50 shadow-sm ring-1 ring-sky-200"
+                                  : "border-slate-200 bg-white hover:border-slate-300"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="text-[13px] font-semibold text-slate-800">{skin.name}</span>
+                                {settings.FLOAT_SKIN === skin.id && (
+                                  <span className="w-4 h-4 rounded-full bg-sky-500 flex items-center justify-center">
+                                    <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex gap-1.5 mt-2">
+                                {skin.swatches.map((c) => (
+                                  <span key={c} className="w-4 h-4 rounded-full border border-white shadow-sm" style={{ background: c }} />
+                                ))}
+                              </div>
+                              <p className="text-[10px] text-slate-400 mt-1.5">{skin.desc}</p>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="h-px bg-slate-200" />
+
+                      <div className="flex flex-col gap-2">
+                        <h4 className="text-sm font-semibold text-slate-800">自定义头像</h4>
+                        <p className="text-[11px] text-slate-400">
+                          上传一张本地图片叠加到悬浮球表面（建议正方形透明 PNG，自动裁圆并融入球体）。
+                          例如使用「潇洒哥」等 3D 动感角色头像，打造专属悬浮球。
+                        </p>
+                        <div className="flex items-center gap-3 mt-1">
+                          <input
+                            type="text"
+                            value={settings.FLOAT_AVATAR_PATH}
+                            onChange={(e) => handleInputChange("FLOAT_AVATAR_PATH", e.target.value)}
+                            placeholder="本地图片路径，如 C:\Users\you\avatar.png 或留空清除"
+                            className="flex-1 min-w-0 rounded-[10px] border border-slate-200 bg-white px-3 py-2 text-[12px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-300"
+                          />
+                          <button
+                            onClick={handleChooseAvatar}
+                            className="px-4 py-2 rounded-[10px] bg-slate-800 hover:bg-slate-900 text-white text-[12px] font-medium transition-colors shrink-0"
+                          >
+                            选择图片…
+                          </button>
+                          {settings.FLOAT_AVATAR_PATH && (
+                            <button
+                              onClick={() => handleAvatarApply("")}
+                              className="px-4 py-2 rounded-[10px] bg-white border border-slate-200 hover:border-rose-300 hover:text-rose-500 text-slate-500 text-[12px] font-medium transition-colors shrink-0"
+                            >
+                              清除
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 mt-2">
+                          <button
+                            onClick={() => handleAvatarApply(settings.FLOAT_AVATAR_PATH)}
+                            className="px-4 py-2 rounded-[10px] bg-sky-600 hover:bg-sky-700 text-white text-[12px] font-semibold transition-colors"
+                          >
+                            应用头像
+                          </button>
+                          <span className="text-[11px] text-slate-400">保存后悬浮球立即叠加该头像</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}

@@ -4,7 +4,7 @@ import os from "node:os";
 import https from "node:https";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { app, ipcMain, Menu, BrowserWindow, systemPreferences } from "electron";
+import { app, ipcMain, Menu, BrowserWindow, systemPreferences, dialog } from "electron";
 import { autoUpdater } from "electron-updater";
 import { config, isAsrConfigured, isLlmConfigured, getWhisperModelPath, getBundledBin, WHISPER_MODELS, getWritableEnvPath, expectedWhisperModelBytes } from "./config/env";
 import { IPC_CHANNELS } from "./ipc/channels";
@@ -20,6 +20,8 @@ import {
   extractWhisperGpuComponent,
   removeWhisperGpuComponent,
   gpuComponentDownloaded,
+  findLocalGpuZip,
+  SlowNetworkError,
 } from "./asr/whisperGpu";
 import { detectNvidiaGpu } from "./control/windows";
 import { DeepSeekClient, DualChannel } from "./llm/deepseek";
@@ -1628,6 +1630,79 @@ function setupIpc(): void {
     handleFloatMenuAction(action);
   });
 
+  // 悬浮球外观：获取当前皮肤/头像配置
+  ipcMain.handle(IPC_CHANNELS.FLOAT_APPEARANCE_GET, () => {
+    return {
+      skin: config.float.skin,
+      avatarPath: config.float.avatarPath,
+    };
+  });
+
+  // 悬浮球外观：更新皮肤/头像配置并实时推送给悬浮球窗口（无需重启）
+  ipcMain.handle(IPC_CHANNELS.FLOAT_APPEARANCE_SET, async (_event, appearance: { skin?: string; avatarPath?: string }) => {
+    try {
+      const validSkins = ["energy", "aurora", "amber", "emerald"];
+      if (appearance.skin !== undefined && validSkins.includes(appearance.skin)) {
+        config.float.skin = appearance.skin;
+      }
+      if (appearance.avatarPath !== undefined) {
+        // 空串表示清除自定义头像；非空需是存在的本地图片
+        if (appearance.avatarPath && !fs.existsSync(appearance.avatarPath)) {
+          return { success: false, error: "头像文件不存在：" + appearance.avatarPath };
+        }
+        config.float.avatarPath = appearance.avatarPath;
+      }
+      // 持久化到 daisy.env
+      const envPath = getWritableEnvPath();
+      const existing: Record<string, string> = {};
+      if (fs.existsSync(envPath)) {
+        for (const line of fs.readFileSync(envPath, "utf-8").split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eqIdx = trimmed.indexOf("=");
+          if (eqIdx > 0) existing[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim();
+        }
+      }
+      if (appearance.skin !== undefined) existing.FLOAT_SKIN = config.float.skin;
+      if (appearance.avatarPath !== undefined) existing.FLOAT_AVATAR_PATH = config.float.avatarPath;
+      fs.writeFileSync(envPath, Object.entries(existing).map(([k, v]) => `${k}=${v}`).join("\n") + "\n", "utf-8");
+
+      // 实时推送给悬浮球：皮肤即时切换、头像即时叠加/移除
+      sendToFloatWindow(IPC_CHANNELS.FLOAT_APPEARANCE_CHANGED, {
+        skin: config.float.skin,
+        avatarPath: config.float.avatarPath,
+      });
+      return { success: true, skin: config.float.skin, avatarPath: config.float.avatarPath };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logError("FLOAT_APPEARANCE_SET failed", error);
+      return { success: false, error: msg };
+    }
+  });
+
+  // 悬浮球自定义头像：原生文件选择器（图片格式过滤）
+  ipcMain.handle(IPC_CHANNELS.FLOAT_AVATAR_CHOOSE, async (event) => {
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options: Electron.OpenDialogOptions = {
+        title: "选择悬浮球头像图片",
+        properties: ["openFile"],
+        filters: [
+          { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] },
+        ],
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, canceled: true, path: "" };
+      }
+      return { success: true, canceled: false, path: result.filePaths[0] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logError("FLOAT_AVATAR_CHOOSE failed", error);
+      return { success: false, canceled: false, path: "", error: msg };
+    }
+  });
+
   ipcMain.on(IPC_CHANNELS.TTS_MUTE_CURRENT, () => {
     muteCurrentAnswerSpeech();
   });
@@ -1725,6 +1800,8 @@ function setupIpc(): void {
       VISUAL_BACKUP_API_KEY: config.vision.backupApiKey,
       VISUAL_BACKUP_BASE_URL: config.vision.backupBaseUrl,
       VISUAL_BACKUP_MODEL: config.vision.backupModel,
+      FLOAT_SKIN: config.float.skin,
+      FLOAT_AVATAR_PATH: config.float.avatarPath,
     };
   });
 
@@ -1754,6 +1831,7 @@ function setupIpc(): void {
         "AUDIO_INPUT_DEVICE",
         "VISUAL_API_KEY", "VISUAL_BASE_URL", "VISUAL_MODEL",
         "VISUAL_BACKUP_API_KEY", "VISUAL_BACKUP_BASE_URL", "VISUAL_BACKUP_MODEL",
+        "FLOAT_SKIN", "FLOAT_AVATAR_PATH",
       ]);
 
       const existing: Record<string, string> = {};
@@ -1870,6 +1948,33 @@ function setupIpc(): void {
   // whisperNeedsNoGpu() 检测到 ggml-cuda.dll 后自动放行 GPU。默认 CPU 包不受影响。
   let gpuDownloadInFlight = false;
 
+  // 手动下载看门狗：网络过慢转入手动引导后，每 5s 扫描一次常见目录。
+  // 用户用浏览器/下载器（断点续传）下完 zip 后自动继续解压部署，全程无需再点按钮。
+  let manualZipTimer: NodeJS.Timeout | null = null;
+  const startManualZipWatcher = (): void => {
+    if (manualZipTimer) return;
+    manualZipTimer = setInterval(async () => {
+      const local = findLocalGpuZip();
+      if (!local) return;
+      if (manualZipTimer) { clearInterval(manualZipTimer); manualZipTimer = null; }
+      gpuDownloadInFlight = true;
+      try {
+        sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "extract", percent: 100, received: 0, total: 0, speed: 0, source: "" });
+        await whisperServer.dispose();
+        await extractWhisperGpuComponent(local);
+        fs.promises.unlink(local).catch(() => {});
+        log("whisperGpu: manually downloaded component deployed, restart to activate");
+        sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "manual-done", percent: 100, received: 0, total: 0, speed: 0, source: "" });
+      } catch (error) {
+        logError("whisperGpu manual deploy failed", error);
+        sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "manual-done", percent: 0, received: 0, total: 0, speed: 0, source: "" });
+      } finally {
+        gpuDownloadInFlight = false;
+      }
+    }, 5000);
+    manualZipTimer.unref?.();
+  };
+
   ipcMain.handle(IPC_CHANNELS.WHISPER_GPU_STATUS, async () => {
     const nvidia = isWindows() ? await detectNvidiaGpu() : "none";
     return {
@@ -1907,6 +2012,22 @@ function setupIpc(): void {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logError("whisperGpu deploy failed", error);
+      if (error instanceof SlowNetworkError) {
+        // 网络过慢：引导用户用浏览器/下载器手动下载 zip（支持断点续传+多线程），
+        // 同时后台轮询常见目录，检测到文件后自动继续解压部署，全程无需重启操作。
+        sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, {
+          phase: "manual",
+          percent: 0,
+          received: 0,
+          total: error.expectedSize,
+          speed: 0,
+          source: error.url,
+          manualUrl: error.url,
+          manualFileName: error.fileName,
+        });
+        startManualZipWatcher();
+        return { success: false, error: msg, manual: true, manualUrl: error.url, manualFileName: error.fileName };
+      }
       sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "download", percent: 0, received: 0, total: 0, speed: 0, source: "" });
       return { success: false, error: msg };
     } finally {

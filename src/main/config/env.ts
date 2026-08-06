@@ -120,6 +120,10 @@ export const config = {
   float: {
     defaultMode: process.env.FLOAT_DEFAULT_MODE === "mini" ? "mini" : "standard",
     autoCollapse: process.env.FLOAT_AUTO_COLLAPSE !== "false",
+    // 悬浮球外观：皮肤预设（energy|aurora|amber|emerald，默认 energy）
+    skin: process.env.FLOAT_SKIN || "energy",
+    // 自定义头像图片路径（本地图片，叠加显示在球体上，实现「潇洒哥 3D 动感头像」类需求）
+    avatarPath: process.env.FLOAT_AVATAR_PATH || "",
   },
   autoLaunch: process.env.AUTO_LAUNCH === "true",
 };
