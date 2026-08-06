@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import { ensureOutputWritten } from "../src/main/utils/fileCheck";
 
 const electronMockState = vi.hoisted(() => ({ userDataDir: "/__daisy_no_gpu__" }));
 
@@ -52,6 +53,7 @@ import {
 } from "../src/main/control/windows";
 import { isWindows, runPowerShell } from "../src/main/utils/windowsShell";
 import { findPython, hasPythonLibrary, runPythonCode } from "../src/main/utils/pythonRuntime";
+import { isDangerousPythonCode } from "../src/main/utils/pythonTools";
 
 beforeEach(() => {
   vi.mocked(runPowerShell).mockClear();
@@ -461,6 +463,36 @@ describe("convertDocument 落盘校验（杜绝假成功）", () => {
   });
 });
 
+describe("ensureOutputWritten（统一落盘校验，视频/文档工具通用）", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "daisy-outcheck-"));
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("文件存在且非空 → null（成功）", () => {
+    const f = path.join(tmpDir, "ok.mp4");
+    fs.writeFileSync(f, "data");
+    expect(ensureOutputWritten(f)).toBeNull();
+    expect(ensureOutputWritten(f, "视频截取")).toBeNull();
+  });
+
+  it("文件不存在 → 返回带动作标签的失败文案", () => {
+    const missing = ensureOutputWritten(path.join(tmpDir, "nope.mp4"), "视频截取");
+    expect(missing).toContain("视频截取失败");
+    expect(missing).toContain("nope.mp4");
+    const doc = ensureOutputWritten(path.join(tmpDir, "nope.pdf"));
+    expect(doc).toContain("文档转换失败");
+  });
+
+  it("空文件（0 字节）→ 视为未成功写入", () => {
+    const f = path.join(tmpDir, "empty.mp4");
+    fs.writeFileSync(f, "");
+    const r = ensureOutputWritten(f, "视频截取");
+    expect(r).toContain("视频截取失败");
+  });
+});
+
 describe("Python 技能工具（v1.5.17：edit_pdf 跨平台化 + pdf_to_excel/read_excel/run_python）", () => {
   beforeEach(() => {
     vi.mocked(findPython).mockReset();
@@ -532,6 +564,24 @@ describe("Python 技能工具（v1.5.17：edit_pdf 跨平台化 + pdf_to_excel/r
   it("run_python：无 Python 时给出安装引导", async () => {
     const r = await runPython("print(1)");
     expect(r).toContain("Python");
+  });
+
+  it("isDangerousPythonCode：os.system / subprocess / rmtree 全部拦截", () => {
+    expect(isDangerousPythonCode('os.system("rm -rf /")')).toContain("系统命令");
+    expect(isDangerousPythonCode("import subprocess; subprocess.run(['shutdown'])")).toContain("外部进程");
+    expect(isDangerousPythonCode("shutil.rmtree('/tmp/x')")).toContain("递归删除");
+  });
+
+  it("isDangerousPythonCode：正常数据分析脚本放行", () => {
+    expect(isDangerousPythonCode("import pandas as pd; df = pd.read_csv('a.csv'); print(df.mean())")).toBeNull();
+    expect(isDangerousPythonCode("import fitz; doc = fitz.open('a.pdf'); print(len(doc))")).toBeNull();
+  });
+
+  it("run_python：危险代码被拦截并引导专用工具", async () => {
+    const r = await runPython("import os; os.system('rm -rf /')");
+    expect(r).toContain("已阻止脚本");
+    expect(r).toContain("run_shell_command");
+    expect(vi.mocked(findPython)).not.toHaveBeenCalled();
   });
 });
 

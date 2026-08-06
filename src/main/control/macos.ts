@@ -13,6 +13,7 @@ import { switchAudioOutput as sharedSwitchAudioOutput } from "../utils/audioSwit
 import { isWindows } from "../utils/windowsShell";
 import * as win from "./windows";
 import { editPdfText, pdfToExcelText, readExcelText, runPythonText } from "../utils/pythonTools";
+import { ensureOutputWritten } from "../utils/fileCheck";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -1067,6 +1068,8 @@ export async function trimVideo(source: string, start: string, end: string, outp
     ];
     log(`trimVideo: ${ffmpeg} ${args.join(" ")}`);
     await execFileAsync(ffmpeg, args, { timeout: 60000, windowsHide: true });
+    const missing = ensureOutputWritten(outPath, "视频截取");
+    if (missing) return missing;
     return `已截取视频片段，保存至「${outName}」（${dur} 秒）`;
   } catch (error) {
     return `视频截取失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -1102,6 +1105,8 @@ export async function convertVideo(source: string, format: string, output?: stri
 
     log(`convertVideo: ${ffmpeg} ${args.join(" ")}`);
     await execFileAsync(ffmpeg, args, { timeout: 300000, windowsHide: true });
+    const missing = ensureOutputWritten(outPath, "视频格式转换");
+    if (missing) return missing;
     return `已转换视频格式，保存至「${outName}」`;
   } catch (error) {
     return `视频格式转换失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -1139,6 +1144,8 @@ export async function extractAudio(source: string, format: string = "mp3", outpu
 
     log(`extractAudio: ${ffmpeg} ${args.join(" ")}`);
     await execFileAsync(ffmpeg, args, { timeout: 300000, windowsHide: true });
+    const missing = ensureOutputWritten(outPath, "音频提取");
+    if (missing) return missing;
     return `已提取音频，保存至「${outName}」`;
   } catch (error) {
     return `音频提取失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -1180,16 +1187,6 @@ async function htmlToPdfViaElectron(htmlPath: string, pdfPath: string): Promise<
 }
 
 /** 校验输出文件确实落盘（存在且非空），防止工具链静默失败时虚报成功 */
-function ensureOutputWritten(dst: string): string | null {
-  try {
-    const st = fs.statSync(dst);
-    if (st.isFile() && st.size > 0) return null;
-  } catch {
-    // 文件不存在 → 走下方统一失败文案
-  }
-  return `文档转换失败：未检测到输出文件「${path.basename(dst)}」，产物未成功写入磁盘`;
-}
-
 export async function convertDocument(source: string, target: string): Promise<string> {
   if (isWindows()) return win.convertDocument(source, target);
   try {

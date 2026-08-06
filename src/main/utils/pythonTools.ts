@@ -251,7 +251,10 @@ max_rows = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 
 try:
     wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
 except Exception as e:
-    print("READ_ERR:" + str(e))
+    if src.lower().endswith('.xls'):
+        print("XLS_FORMAT: 该文件是旧版 .xls 格式，openpyxl 仅支持 .xlsx。请先用 Excel/WPS 另存为 .xlsx，或使用 convert_document 转换后再读取。")
+    else:
+        print("READ_ERR:" + str(e))
     sys.exit(0)
 out = []
 for ws in wb.worksheets:
@@ -276,10 +279,34 @@ print(json.dumps(out, ensure_ascii=False))
 }
 
 /**
+ * Python 脚本危险模式扫描：run_python 执行任意代码，而 Python 的
+ * os.system / subprocess / shutil.rmtree 可绕过 run_shell_command 的危险命令拦截，
+ * 故在解释器执行前先扫一遍。数据分析脚本（pandas 等）不需要外部进程调用，
+ * 命中即拒绝并引导走专用工具，误报率低。
+ */
+export function isDangerousPythonCode(code: string): string | null {
+  const patterns: Array<{ re: RegExp; reason: string }> = [
+    { re: /\bos\s*\.\s*(system|popen|startfile)\s*\(/i, reason: "Python 调用系统命令" },
+    { re: /\bsubprocess\s*\.\s*(run|call|check_call|check_output|popen|getoutput|Popen)\s*\(/i, reason: "Python 启动外部进程" },
+    { re: /\bshutil\s*\.\s*rmtree\s*\(/i, reason: "Python 递归删除目录" },
+    { re: /\bos\s*\.\s*remove\s*\(\s*["'][/\\]/i, reason: "Python 删除根路径文件" },
+  ];
+  for (const { re, reason } of patterns) {
+    if (re.test(code)) return reason;
+  }
+  return null;
+}
+
+/**
  * 通用 Python 脚本执行（run_python 工具）：让 LLM 用 Python 完成任意复杂逻辑，
  * 如 pandas 数据分析、文件批处理、数据转换等。
  */
 export async function runPythonViaScript(code: string, args: string[] = []): Promise<PyResult> {
+  const danger = isDangerousPythonCode(code);
+  if (danger) {
+    log(`run_python blocked (${danger})`);
+    return { ok: false, output: `已阻止脚本：${danger}。Python 技能包仅用于数据处理；如需执行外部命令，请改用 run_shell_command 或对应专用工具。` };
+  }
   const env = await findPython();
   if (!env) return { ok: false, missingPython: true };
   try {
@@ -386,6 +413,7 @@ export async function readExcelText(source: string, maxRows = 200): Promise<stri
   if (r.missingLibs) return pythonLibMissingHint("", r.missingLibs);
   if (r.ok && r.output) {
     if (r.output.startsWith("READ_ERR:")) return `读取 Excel 失败：${r.output.slice(9)}`;
+    if (r.output.startsWith("XLS_FORMAT:")) return r.output.slice("XLS_FORMAT:".length).trim();
     return r.output;
   }
   return r.output || `读取 Excel 失败`;
