@@ -125,6 +125,9 @@ GLOBAL_SHORTCUT=RightOption
 WAKE_WORD_ENABLED=true
 WAKE_WORD=嘿 Daisy
 AUDIO_INPUT_DEVICE=
+# 悬浮球形态：FLOAT_DEFAULT_MODE=standard|mini（默认 standard），FLOAT_AUTO_COLLAPSE=false 关闭智能收纳
+# FLOAT_DEFAULT_MODE=standard
+# FLOAT_AUTO_COLLAPSE=true
 ```
 
 ## 外部依赖

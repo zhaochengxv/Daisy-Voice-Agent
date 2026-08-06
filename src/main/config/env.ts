@@ -116,6 +116,11 @@ export const config = {
   firecrawl: {
     apiKey: process.env.FIRECRAWL_API_KEY || "",
   },
+  // 悬浮球形态与智能收纳：FLOAT_DEFAULT_MODE=standard|mini，FLOAT_AUTO_COLLAPSE 默认开启
+  float: {
+    defaultMode: process.env.FLOAT_DEFAULT_MODE === "mini" ? "mini" : "standard",
+    autoCollapse: process.env.FLOAT_AUTO_COLLAPSE !== "false",
+  },
   autoLaunch: process.env.AUTO_LAUNCH === "true",
 };
 

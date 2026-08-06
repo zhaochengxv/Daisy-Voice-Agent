@@ -8,6 +8,7 @@ import { runAppleScript } from "../utils/appleScript";
 import { switchAudioOutput as sharedSwitchAudioOutput } from "../utils/audioSwitch";
 import { isWindows } from "../utils/windowsShell";
 import * as win from "../control/windows";
+import { setFloatWindowMode, showFloatWindow } from "../windows/floatWindow";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -1063,6 +1064,26 @@ export async function tryLocalCommand(text: string): Promise<CommandResult> {
   }
   if (/^(?:上一首|上一曲|上一个)$/.test(normalized)) {
     return await controlPlayback("prev");
+  }
+
+  // 悬浮球形态控制（必须含「悬浮」关键字，避免误伤「缩小窗口/关闭应用」等指令）
+  if (/悬浮/.test(normalized)) {
+    if (/^(?:隐藏|收起|收起来|关闭|消失|消失掉|关掉)/.test(normalized)) {
+      setFloatWindowMode("hidden");
+      return { handled: true, action: "float:hide" };
+    }
+    if (/^(?:迷你|缩小|变小|收缩|折叠)/.test(normalized)) {
+      setFloatWindowMode("mini");
+      return { handled: true, action: "float:mini" };
+    }
+    if (/^(?:显示|展示|打开|唤出|出来)/.test(normalized)) {
+      showFloatWindow();
+      return { handled: true, action: "float:show" };
+    }
+    if (/^(?:恢复|还原|复原|变回|展开)/.test(normalized)) {
+      setFloatWindowMode("standard");
+      return { handled: true, action: "float:standard" };
+    }
   }
 
   // 勿扰/专注模式

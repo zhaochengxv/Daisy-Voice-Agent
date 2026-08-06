@@ -282,13 +282,18 @@ export default function App() {
     setGpuPhase("download");
     setGpuProgress(0);
     setWhisperGpuStatus((prev) => ({ ...prev, downloading: true }));
-    const res = await window.diriAPI.downloadWhisperGpu();
-    if (!res.success) {
-      showTemporaryStatus("GPU 组件部署失败：" + (res.error || "未知错误"), "error");
+    try {
+      const res = await window.diriAPI.downloadWhisperGpu();
+      if (!res.success) {
+        showTemporaryStatus("GPU 组件部署失败：" + (res.error || "未知错误"), "error");
+      }
+    } catch (err) {
+      showTemporaryStatus("GPU 组件部署异常：" + String(err), "error");
+    } finally {
+      setGpuPhase("");
+      setGpuProgress(0);
+      refreshWhisperGpuStatus();
     }
-    setGpuPhase("");
-    setGpuProgress(0);
-    refreshWhisperGpuStatus();
   };
 
   const handleRemoveGpu = async () => {

@@ -99,6 +99,9 @@ export interface DiriAPI {
   onSetDocked: (callback: (docked: boolean) => void) => () => void;
   setIgnoreMouse: (ignore: boolean) => void;
   floatDrag: (dx: number, dy: number) => void;
+  setFloatMode: (mode: "standard" | "mini" | "hidden") => void;
+  onFloatModeChanged: (callback: (mode: string) => void) => () => void;
+  floatMenuAction: (action: string) => void;
 }
 
 function createListener<T>(channel: string) {
@@ -183,6 +186,9 @@ const api: DiriAPI = {
   onSetDocked: createListener<boolean>(IPC_CHANNELS.SET_DOCKED),
   setIgnoreMouse: (ignore: boolean) => ipcRenderer.send(IPC_CHANNELS.SET_IGNORE_MOUSE, ignore),
   floatDrag: (dx: number, dy: number) => ipcRenderer.send(IPC_CHANNELS.FLOAT_DRAG, dx, dy),
+  setFloatMode: (mode: "standard" | "mini" | "hidden") => ipcRenderer.send(IPC_CHANNELS.FLOAT_SET_MODE, mode),
+  onFloatModeChanged: createListener<string>(IPC_CHANNELS.FLOAT_MODE_CHANGED),
+  floatMenuAction: (action: string) => ipcRenderer.send(IPC_CHANNELS.FLOAT_MENU_ACTION, action),
 };
 
 contextBridge.exposeInMainWorld("diriAPI", api);

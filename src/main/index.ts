@@ -8,7 +8,7 @@ import { app, ipcMain, Menu, BrowserWindow, systemPreferences } from "electron";
 import { autoUpdater } from "electron-updater";
 import { config, isAsrConfigured, isLlmConfigured, getWhisperModelPath, getBundledBin, WHISPER_MODELS, getWritableEnvPath, expectedWhisperModelBytes } from "./config/env";
 import { IPC_CHANNELS } from "./ipc/channels";
-import { createFloatWindow, getFloatWindow, sendToFloatWindow, showFloatWindow, hideFloatWindow } from "./windows/floatWindow";
+import { createFloatWindow, getFloatWindow, sendToFloatWindow, showFloatWindow, hideFloatWindow, handleFloatDrag, setFloatWindowMode, getFloatWindowMode } from "./windows/floatWindow";
 import { createSettingsWindow, getSettingsWindow } from "./windows/settingsWindow";
 import { createTray, destroyTray } from "./windows/tray";
 import { initAudioRecorder, startRecording, stopRecording, getIsRecording, setWakeWordCaptureEnabled, getAudioDevices, getAudioInputDevice, setAudioInputDevice } from "./audio/recorder";
@@ -1282,16 +1282,22 @@ function startAutoHideTimer(): void {
       log("Auto-hide deferred again — TTS started during wait");
       return;
     }
-    log("Auto-hiding orb after inactivity");
-    hideOrb();
+    // mini / hidden 是常驻形态：完整胶囊阅读完才 auto-hide，迷你球与已隐藏态不消失
+    const floatModeNow = getFloatWindowMode();
+    if (floatModeNow === "mini" || floatModeNow === "hidden") {
+      log(`Auto-hide skipped — float window in ${floatModeNow} mode (persistent)`);
+    } else {
+      log("Auto-hiding orb after inactivity");
+      hideOrb();
+    }
+    // 进入闲置立即恢复播放(不等悬浮球消失)
+    unmuteSystemOnly();
+    restoreMediaOnly();
+    // Resume wake word monitoring when going idle
+    if (wakeWordMonitor && !isSessionActive && !isSpeaking && !isScreenLocked) {
+      wakeWordMonitor.resume();
+    }
   }, AUTO_HIDE_TIMEOUT_MS);
-  // 进入闲置立即恢复播放(不等悬浮球消失)
-  unmuteSystemOnly();
-  restoreMediaOnly();
-  // Resume wake word monitoring when going idle
-  if (wakeWordMonitor && !isSessionActive && !isSpeaking && !isScreenLocked) {
-    wakeWordMonitor.resume();
-  }
 }
 
 function stopAutoHideTimer(): void {
@@ -1317,6 +1323,72 @@ function updateState(state: string, message?: string, metadata?: Record<string, 
   const payload = { state, ...(message ? { message } : {}), ...(metadata || {}) };
   log(`State update: ${state} ${message || ""} ${metadata ? JSON.stringify(metadata) : ""}`.trim());
   sendToFloatWindow(IPC_CHANNELS.STATE_UPDATE, JSON.stringify(payload));
+  handleFloatAutoMode(state);
+}
+
+// ── 悬浮球智能自动收纳 ──
+// 长任务（LLM 工具循环 / 深度思考）期间自动把完整胶囊收缩为迷你球并吸附右上角，
+// 避免悬浮窗遮挡正在进行的全自动工作流（用户明令要求）。任务结束（开始播报 /
+// 回到 idle）后自动恢复 standard 形态。用户手动切换的形态不受自动逻辑覆盖。
+let autoCollapseTimer: NodeJS.Timeout | null = null;
+let autoCollapsed = false;
+
+function handleFloatAutoMode(state: string): void {
+  if (!config.float.autoCollapse) return;
+
+  const busy = state === "processing" || state === "thinking";
+  if (busy) {
+    if (!autoCollapseTimer) {
+      autoCollapseTimer = setTimeout(() => {
+        autoCollapseTimer = null;
+        if (!autoCollapsed && getFloatWindowMode() === "standard") {
+          autoCollapsed = true;
+          log("[floatWindow] Long task detected, auto-collapsing to mini mode.");
+          setFloatWindowMode("mini");
+        }
+      }, 5000);
+    }
+  } else if (state === "speaking" || state === "idle" || state === "error") {
+    if (autoCollapseTimer) { clearTimeout(autoCollapseTimer); autoCollapseTimer = null; }
+    if (autoCollapsed) {
+      autoCollapsed = false;
+      if (config.float.defaultMode !== "mini" && getFloatWindowMode() === "mini") {
+        log("[floatWindow] Task done, restoring standard mode.");
+        setFloatWindowMode("standard");
+      }
+    }
+  }
+}
+
+/** 悬浮球自绘右键菜单动作分发 */
+function handleFloatMenuAction(action: string): void {
+  switch (action) {
+    case "settings": {
+      const win = getSettingsWindow();
+      if (win && !win.isDestroyed()) {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      } else {
+        createSettingsWindow();
+      }
+      break;
+    }
+    case "mini":
+      setFloatWindowMode("mini");
+      break;
+    case "standard":
+      setFloatWindowMode("standard");
+      break;
+    case "hide":
+      setFloatWindowMode("hidden");
+      break;
+    case "quit":
+      app.quit();
+      break;
+    default:
+      break;
+  }
 }
 
 function sendToSettingsWindow(channel: string, ...args: unknown[]): void {
@@ -1488,12 +1560,22 @@ function setupIpc(): void {
     }
   });
 
-  // Windows 悬浮球手动拖动：renderer 上报相对位移，主进程移动无边框窗口
+  // Windows 悬浮球手动拖动：renderer 上报相对位移，主进程移动无边框窗口。
+  // 统一走 handleFloatDrag（节流 + 屏幕内 clamp，防止拖出屏幕丢失）。
   ipcMain.on(IPC_CHANNELS.FLOAT_DRAG, (_event, dx: number, dy: number) => {
-    const fw = getFloatWindow();
-    if (!fw || fw.isDestroyed()) return;
-    const [x, y] = fw.getPosition();
-    fw.setPosition(x + Math.round(dx), y + Math.round(dy));
+    handleFloatDrag(dx, dy);
+  });
+
+  // 悬浮球形态切换（renderer 双击/右键菜单触发）
+  ipcMain.on(IPC_CHANNELS.FLOAT_SET_MODE, (_event, mode: string) => {
+    if (mode === "standard" || mode === "mini" || mode === "hidden") {
+      setFloatWindowMode(mode);
+    }
+  });
+
+  // 悬浮球右键菜单动作
+  ipcMain.on(IPC_CHANNELS.FLOAT_MENU_ACTION, (_event, action: string) => {
+    handleFloatMenuAction(action);
   });
 
   ipcMain.on(IPC_CHANNELS.TTS_MUTE_CURRENT, () => {
@@ -1752,6 +1834,8 @@ function setupIpc(): void {
     if (gpuDownloadInFlight) return { success: false, error: "下载进行中" };
     gpuDownloadInFlight = true;
     try {
+      // 第一时间通知前端进入下载态，避免"点了没反应"的感知
+      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "download", percent: 0 });
       // 部署前先释放 whisper-server 对 bin 目录 DLL 的占用（Windows 文件锁）
       await whisperServer.dispose();
       const zipPath = await downloadWhisperGpuComponent((percent) => {
@@ -1768,6 +1852,7 @@ function setupIpc(): void {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logError("whisperGpu deploy failed", error);
+      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "download", percent: 0 });
       return { success: false, error: msg };
     } finally {
       gpuDownloadInFlight = false;

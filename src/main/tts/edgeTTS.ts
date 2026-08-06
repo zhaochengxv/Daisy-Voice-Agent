@@ -38,6 +38,31 @@ class SynthesisLimiter {
 
 const synthesisLimiter = new SynthesisLimiter(2);
 
+/** 校验合成出的 MP3 是否有效：Edge TTS 正常输出带 ID3 头（"ID3"）或 MPEG 帧同步字
+ *  （0xFF 0xEx），且至少 1KB。服务端限流（503）期间偶尔会把错误响应体写入文件，
+ *  这类"成功返回的坏文件"是播放端 Format error / no supported source 导致播报跳段的根因，
+ *  必须在队列消费前拦截并重试合成。 */
+export function isValidMp3(filePath: string): boolean {
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size < 1024) return false;
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(4);
+    try {
+      fs.readSync(fd, buf, 0, 4, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    // ID3 标签头：0x49 0x44 0x33 = "ID3"
+    if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return true;
+    // MPEG 音频帧同步字：0xFF 0xE0~0xFF
+    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 // Clean old files on startup (in case of crash)
 export function startTTSCleanup(): void {
   try {
@@ -79,6 +104,10 @@ export class EdgeTTSPlayer {
             // 放到 30s：服务端正常约 1-2s/句，30s 足够覆盖慢网与长文本，同时仍能兜底死连接。
             const tts = new EdgeTTS({ voice: config.tts.voice, rate: config.tts.rate, timeout: 30000 });
             await tts.ttsPromise(text, filePath);
+            // 合成"成功"但文件损坏（503 限流期服务端返回坏响应体）视为失败，触发重试
+            if (!isValidMp3(filePath)) {
+              throw new Error("合成文件无效（MP3 魔数校验失败），服务端可能正在限流");
+            }
             lastError = null;
             break;
           } catch (error) {

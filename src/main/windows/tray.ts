@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { Tray, Menu, nativeImage, app } from "electron";
 import { getSettingsWindow, createSettingsWindow } from "./settingsWindow";
-import { getFloatWindow, showFloatWindow } from "./floatWindow";
+import { getFloatWindow, showFloatWindow, setFloatWindowMode } from "./floatWindow";
 import { log } from "../utils/logger";
 
 let tray: Tray | null = null;
@@ -90,6 +90,8 @@ export function createTray(): Tray | null {
     const menu = Menu.buildFromTemplate([
       { label: "打开设置", click: () => showSettings() },
       { label: "显示悬浮球", click: () => showOrb() },
+      { label: "迷你悬浮球", click: () => setFloatWindowMode("mini") },
+      { label: "隐藏悬浮球", click: () => setFloatWindowMode("hidden") },
       { type: "separator" },
       { label: "退出 Daisy", click: () => app.quit() },
     ]);

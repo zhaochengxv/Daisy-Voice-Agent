@@ -157,11 +157,48 @@ const statusBadgeEl = document.getElementById("statusBadge");
 const orbHaloEl = document.getElementById("orbHalo");
 const capsuleEl = document.getElementById("capsule");
 
+// ── 悬浮球形态与平台降级 ──
+let currentFloatMode = "standard";
+// Windows 透明窗口 backdrop-filter 采样异常（拖动放大的已知隐患），CSS 降级
+if (diriAPI.platform === "win32") document.body.classList.add("win32");
+
+diriAPI.onFloatModeChanged((mode) => {
+  currentFloatMode = mode === "mini" ? "mini" : mode === "hidden" ? "hidden" : "standard";
+  document.body.classList.toggle("mini", currentFloatMode === "mini");
+});
+
+function toggleFloatMode() {
+  const next = currentFloatMode === "mini" ? "standard" : "mini";
+  diriAPI.setFloatMode(next);
+}
+
 // 状态切换冲击波（一次性的能量涟漪，渲染循环中衰减扩散）
 let pulses = [];
 // speaking 表面能量粒子（随高频音量闪烁漂移）
 let sparkles = [];
 let lastVisualState = null;
+
+// ── 光标跟随高光（液态玻璃"视差"：高光点随鼠标在球面移动，增强材质真实感）──
+let cursorGlowX = 0;
+let cursorGlowY = 0;
+let cursorGlowActive = false;
+let cursorGlowFade = 0;
+// 桌面空闲时的高光静止位：球体左上常规高光区
+let lastCursorTime = 0;
+
+window.addEventListener("mousemove", (e) => {
+  if (orbContainer) {
+    const rect = canvas.getBoundingClientRect();
+    const inOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
+    cursorGlowActive = inOrb;
+    if (inOrb) {
+      cursorGlowX = e.clientX - rect.left;
+      cursorGlowY = e.clientY - rect.top;
+      lastCursorTime = performance.now();
+    }
+  }
+});
+window.addEventListener("mouseleave", () => { cursorGlowActive = false; });
 
 function hexToRgb(hex) {
   const clean = hex.replace("#", "");
@@ -481,6 +518,11 @@ function render() {
   lastFrameTime = now;
   const dt = Math.min(0.08, rawDt) * speedMultiplier;
 
+  cursorGlowFade = lerp(cursorGlowFade, cursorGlowActive ? 1 : 0, 0.12);
+  if (!cursorGlowActive && now - lastCursorTime > 1200) {
+    cursorGlowFade = lerp(cursorGlowFade, 0.25, 0.02);
+  }
+
   const targetConfig = targetConfigs[currentState] || targetConfigs.idle;
   animSpeed = lerp(animSpeed, targetConfig.speed, 0.04);
   animSpread = lerp(animSpread, targetConfig.spread, 0.04);
@@ -523,9 +565,13 @@ function render() {
   const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
   drawSphereBase(cx, cy, radius, currentState);
+  drawBaseReflection(cx, cy, radius);
   drawNeonFilaments(cx, cy, radius, bands.mid, currentState);
   drawOrbitRing(cx, cy, radius, currentState);
   drawRipples(cx, cy, radius, currentState);
+  drawGlassScan(cx, cy, radius, currentState);
+  drawCursorGlow(cx, cy, radius, currentState);
+  drawChromaticEdge(cx, cy, radius, currentState);
   drawInnerShadow(cx, cy, radius, isDark);
   drawGlassWallRefraction(cx, cy, radius);
 
@@ -535,6 +581,7 @@ function render() {
   ctx.restore();
 
   // 状态冲击波：能量涟漪从球心冲出球体（clip 外绘制，不被球面裁切）
+  // 双层结构：内层白色核心环（能量源） + 外层状态色光环（扩散），末端亮核随衰减缩小。
   for (let i = pulses.length - 1; i >= 0; i--) {
     const p = pulses[i];
     p.age += rawDt;
@@ -545,11 +592,45 @@ function render() {
     const prgb = hexToRgb(p.color);
     ctx.save();
     ctx.globalCompositeOperation = "screen";
+    // 内层：白核心（紧随波前的高亮薄环，模拟能量源运动）
+    ctx.beginPath();
+    ctx.arc(cx, cy, pr * 0.94, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 255, 255, ${pa * 0.55})`;
+    ctx.lineWidth = 1.1;
+    ctx.stroke();
+    // 外层：状态色光环
     ctx.beginPath();
     ctx.arc(cx, cy, pr, 0, Math.PI * 2);
     ctx.strokeStyle = `rgba(${prgb.r}, ${prgb.g}, ${prgb.b}, ${pa})`;
     ctx.lineWidth = 2.4 * (1 - prog) + 0.6;
     ctx.stroke();
+    ctx.restore();
+  }
+
+  // 说话中：球体边缘随机能量光刺（高频音量驱动，弱化为细光晕线）
+  if (currentState === "speaking" && bands.high > 0.02) {
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    const flares = 6;
+    for (let i = 0; i < flares; i++) {
+      const baseA = time * 0.55 + i * 2.1;
+      const spread = (Math.sin(time * 0.9 + i) * 0.7) * bands.high;
+      const a = baseA + spread;
+      const fx = cx + Math.cos(a) * (radius - 1);
+      const fy = cy + Math.sin(a) * (radius - 1);
+      const len = radius * (0.10 + 0.14 * bands.high);
+      const tx = cx + Math.cos(a) * (radius + len);
+      const ty = cy + Math.sin(a) * (radius + len);
+      const grad = ctx.createLinearGradient(fx, fy, tx, ty);
+      grad.addColorStop(0, `rgba(255,255,255,${0.10 + 0.12 * bands.high})`);
+      grad.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -610,6 +691,83 @@ function drawSphereBase(cx, cy, radius, activeState) {
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
+}
+
+/** 底部环境反光：球体下缘内侧的柔和环境光，让球体"坐"在环境里而非悬浮贴片 */
+function drawBaseReflection(cx, cy, radius) {
+  ctx.save();
+  const g = ctx.createRadialGradient(
+    cx, cy + radius * 0.72, radius * 0.05,
+    cx, cy + radius * 0.95, radius * 0.72
+  );
+  g.addColorStop(0, "rgba(255, 255, 255, 0.14)");
+  g.addColorStop(0.55, "rgba(255, 255, 255, 0.04)");
+  g.addColorStop(1, "rgba(255, 255, 255, 0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** 玻璃折射扫描：一道极柔的斜向高光带缓慢横穿球体，模拟液态玻璃内部的光路 */
+function drawGlassScan(cx, cy, radius, activeState) {
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  const t = (time * 0.10) % 2;
+  const pos = t < 1 ? t : 2 - t;
+  const x = cx - radius + pos * radius * 2;
+  const g = ctx.createLinearGradient(x - radius * 0.30, 0, x + radius * 0.30, 0);
+  const intensity = activeState === "speaking" ? 0.09 : 0.05;
+  g.addColorStop(0, "rgba(255,255,255,0)");
+  g.addColorStop(0.5, `rgba(255,255,255,${intensity})`);
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** 光标跟随高光：高光点随鼠标位置在球面漂移（Apple Vision 式材质视差） */
+function drawCursorGlow(cx, cy, radius, activeState) {
+  if (cursorGlowFade < 0.02) return;
+  const palette = palettes[activeState] || palettes.idle;
+  const rgb = hexToRgb(palette.main);
+  // 未 hover 时高光回落球心（与顶部高光叠加成柔和的核心辉光），hover 后跟随鼠标
+  const gx = cursorGlowActive ? cursorGlowX : cx;
+  const gy = cursorGlowActive ? cursorGlowY : cy;
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, radius * 0.72);
+  g.addColorStop(
+    0,
+    `rgba(${Math.floor(lerp(rgb.r, 255, 0.55))}, ${Math.floor(lerp(rgb.g, 255, 0.55))}, ${Math.floor(lerp(rgb.b, 255, 0.55))}, ${0.28 * cursorGlowFade})`
+  );
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** 色散边缘：球体边缘极细的红/蓝错位描边，模拟高折射玻璃的棱镜色散 */
+function drawChromaticEdge(cx, cy, radius, activeState) {
+  const palette = palettes[activeState] || palettes.idle;
+  const rgb = hexToRgb(palette.main);
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.lineWidth = 1.1;
+  ctx.beginPath();
+  ctx.arc(cx - 0.55, cy, radius - 0.5, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(255, 70, 100, ${0.10 + rgb.r / 255 * 0.04})`;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx + 0.55, cy, radius - 0.5, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(70, 150, 255, ${0.12 + rgb.b / 255 * 0.04})`;
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawNeonFilaments(cx, cy, radius, vol, activeState) {
@@ -709,7 +867,8 @@ function drawGlassWallRefraction(cx, cy, radius) {
   ctx.restore();
 }
 
-/** 行星环光带：斜穿球体的科技光环（与应用图标视觉语言统一），speaking/listening 时高亮 */
+/** 行星环光带：斜穿球体的科技光环（与应用图标视觉语言统一），speaking/listening 时高亮。
+ *  环上沿椭圆轨道流动的能量光点带尾迹，强化「能量沿环传输」的感知。 */
 function drawOrbitRing(cx, cy, radius, activeState) {
   const active = activeState === "speaking" || activeState === "listening";
   const palette = palettes[activeState] || palettes.idle;
@@ -723,6 +882,34 @@ function drawOrbitRing(cx, cy, radius, activeState) {
   ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${active ? 0.5 : 0.22})`;
   ctx.lineWidth = active ? 2.8 : 1.5;
   ctx.stroke();
+
+  if (active || activeState === "thinking") {
+    ctx.globalCompositeOperation = "screen";
+    const dots = active ? 5 : 3;
+    const speed = active ? 0.30 : 0.14;
+    const hrgb = hexToRgb(palette.highlight);
+    const headSize = active ? 2.4 : 1.7;
+    for (let i = 0; i < dots; i++) {
+      const headT = (time * speed + i / dots) % 1;
+      const ha = headT * Math.PI * 2;
+      // 头部亮点
+      ctx.beginPath();
+      ctx.arc(Math.cos(ha) * rx, Math.sin(ha) * ry, headSize, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, 0.95)`;
+      ctx.fill();
+      // 拖尾：沿轨道反向渐隐的 4 个光点
+      for (let k = 1; k <= 4; k++) {
+        const tt = headT - k * 0.05;
+        if (tt < 0) continue;
+        const aa = tt * Math.PI * 2;
+        const alpha = (1 - k / 5) * (active ? 0.6 : 0.35);
+        ctx.beginPath();
+        ctx.arc(Math.cos(aa) * rx, Math.sin(aa) * ry, headSize * (1 - k * 0.14), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, ${alpha})`;
+        ctx.fill();
+      }
+    }
+  }
   ctx.restore();
 }
 
@@ -788,6 +975,7 @@ let lastDragX = 0;
 let lastDragY = 0;
 if (diriAPI.platform !== "darwin") {
   window.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return; // 仅左键拖动，右键留给自绘菜单
     isDragging = true;
     dragMoved = false;
     lastDragX = e.screenX;
@@ -820,6 +1008,7 @@ function isPointInElement(x, y, el) {
 // - 已静音（muted）：点击任意位置重听被静音的最后回答（恢复播放）。
 // - 空闲/思考/错误：点击 orb → 切换录音（开/关一轮语音会话）；
 //   点击文本区 → 打开设置窗口。文本区承载 LLM 输出，避免与录音入口冲突。
+// 双击 orb 在 standard/mini 间切换，双击的第二次 click 会被抑制不触发录音。
 function spawnRipple() {
   if (!orbContainer) return;
   const el = document.createElement("div");
@@ -827,8 +1016,49 @@ function spawnRipple() {
   orbContainer.appendChild(el);
   el.addEventListener("animationend", () => el.remove());
 }
+
+// ── 自绘右键菜单 ──
+const floatMenuEl = document.getElementById("floatMenu");
+function showFloatMenu(x, y) {
+  if (!floatMenuEl) return;
+  const menuW = 168, menuH = 220;
+  const maxX = window.innerWidth - menuW - 4;
+  const maxY = window.innerHeight - menuH - 4;
+  floatMenuEl.style.left = Math.max(4, Math.min(x, maxX)) + "px";
+  floatMenuEl.style.top = Math.max(4, Math.min(y, maxY)) + "px";
+  floatMenuEl.classList.remove("hidden");
+}
+function hideFloatMenu() {
+  if (floatMenuEl) floatMenuEl.classList.add("hidden");
+}
+// 菜单自身的事件不冒泡到 window（避免触发拖动/录音/开设置）
+if (floatMenuEl) {
+  ["mousedown", "mouseup", "click", "dblclick", "mousemove"].forEach((evt) => {
+    floatMenuEl.addEventListener(evt, (e) => e.stopPropagation());
+  });
+  floatMenuEl.addEventListener("click", (e) => {
+    const item = e.target.closest(".menu-item");
+    if (!item) return;
+    const action = item.getAttribute("data-action");
+    if (action) diriAPI.floatMenuAction(action);
+    hideFloatMenu();
+  });
+}
+window.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  showFloatMenu(e.clientX, e.clientY);
+});
+// 左键点击菜单外任意处关闭菜单
+window.addEventListener("mousedown", (e) => {
+  if (e.button === 0) hideFloatMenu();
+}, true);
+
+let lastClickTime = 0;
 window.addEventListener("click", (e) => {
   if (dragMoved) return; // 拖动后不当作点击
+  const now = Date.now();
+  if (now - lastClickTime < 320) return; // 双击第二击，交给 dblclick 处理
+  lastClickTime = now;
   if (currentState === "speaking") {
     spawnRipple();
     diriAPI.muteCurrentTts();
@@ -849,6 +1079,13 @@ window.addEventListener("click", (e) => {
     }
   } else {
     diriAPI.openSettings();
+  }
+});
+window.addEventListener("dblclick", (e) => {
+  if (dragMoved) return;
+  if (isPointInElement(e.clientX, e.clientY, orbContainer)) {
+    spawnRipple();
+    toggleFloatMode();
   }
 });
 
