@@ -280,14 +280,23 @@ print(json.dumps(out, ensure_ascii=False))
 
 /**
  * Python 脚本危险模式扫描：run_python 执行任意代码，而 Python 的
- * os.system / subprocess / shutil.rmtree 可绕过 run_shell_command 的危险命令拦截，
- * 故在解释器执行前先扫一遍。数据分析脚本（pandas 等）不需要外部进程调用，
- * 命中即拒绝并引导走专用工具，误报率低。
+ * os.system / subprocess(shell=True) / shutil.rmtree 可绕过 run_shell_command 的
+ * 危险命令拦截，故在解释器执行前先扫一遍。
+ *
+ * 策略（v1.5.18 调整）：保留对「原始命令执行」与「危险外部程序」的拦截，同时放开
+ * 合法子进程调用（列表参数 + 本地二进制，如 ffmpeg-static 的探帧/合流）。上一版
+ * 一刀切拦截全部 subprocess，导致 LLM 用 Python 调 ffmpeg 合视频等复杂工作流
+ * 直接被拒（真机日志 run_python blocked (Python 启动外部进程)）。
+ * shell=True 与 powershell/cmd/curl 等解释器/下载器才是注入与攻击的真正载体。
  */
 export function isDangerousPythonCode(code: string): string | null {
+  // 高影响系统命令 / 解释器 / 下载器：subprocess 第一个参数命中即拦截
+  const dangerousExec =
+    /\b(powershell|pwsh|cmd(\.exe)?|sh\b|bash\b|zsh\b|tcsh\b|shutdown|reboot|taskkill|regedit|diskpart|format|net\s+user|curl|wget|iwr|Invoke-WebRequest|bitsadmin|certutil|regsvr32|mshta|rundll32|sc\.exe)\b/i;
   const patterns: Array<{ re: RegExp; reason: string }> = [
-    { re: /\bos\s*\.\s*(system|popen|startfile)\s*\(/i, reason: "Python 调用系统命令" },
-    { re: /\bsubprocess\s*\.\s*(run|call|check_call|check_output|popen|getoutput|Popen)\s*\(/i, reason: "Python 启动外部进程" },
+    { re: /\bos\s*\.\s*(system|popen|startfile)\s*\(/i, reason: "Python 调用系统命令，请改用 run_shell_command" },
+    { re: /\bsubprocess\s*\.\s*(run|call|check_call|check_output|getoutput|Popen)\s*\([^)]*\bshell\s*=\s*(True|1)\b/i, reason: "Python shell=True 存在命令注入风险" },
+    { re: /\bsubprocess\s*\.\s*(run|call|check_call|check_output|getoutput|Popen)\s*\([^)]*["'][^"']*(powershell|pwsh|cmd|sh|bash|zsh|tcsh|shutdown|reboot|taskkill|regedit|diskpart|format|curl|wget|iwr|Invoke-WebRequest|bitsadmin|certutil|regsvr32|mshta|rundll32)[^"']*["']/i, reason: "Python 启动危险外部命令" },
     { re: /\bshutil\s*\.\s*rmtree\s*\(/i, reason: "Python 递归删除目录" },
     { re: /\bos\s*\.\s*remove\s*\(\s*["'][/\\]/i, reason: "Python 删除根路径文件" },
   ];

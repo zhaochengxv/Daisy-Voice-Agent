@@ -74,7 +74,10 @@ export class EdgeTTSPlayer {
         let lastError: any = null;
         while (retries > 0) {
           try {
-            const tts = new EdgeTTS({ voice: config.tts.voice, rate: config.tts.rate });
+            // node-edge-tts 默认 10s 全量合成截止（edge-tts.js:99 reject('Timed out')），
+            // 长句/慢网络下频繁触发（真机日志反复 TTS synthesize failed: Timed out）。
+            // 放到 30s：服务端正常约 1-2s/句，30s 足够覆盖慢网与长文本，同时仍能兜底死连接。
+            const tts = new EdgeTTS({ voice: config.tts.voice, rate: config.tts.rate, timeout: 30000 });
             await tts.ttsPromise(text, filePath);
             lastError = null;
             break;

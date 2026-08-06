@@ -210,6 +210,13 @@ export class AsrSession extends EventEmitter {
           ? JSON.stringify(response.payloadMsg).slice(0, 200)
           : "";
         log(`ASR: server error code ${response.code}${detail ? ` detail=${detail}` : ""}`);
+        // 服务器在 isLastPackage 之后可能补发「会话结束」类错误（实测 45000081
+        // waiting next packet timeout 出现在 final 之后），此时 final 已被消费并进入
+        // LLM/处理流程，再发 error 会覆盖 thinking/speaking 状态，必须静默丢弃。
+        if (this.finalEmitted) {
+          log(`ASR: post-final server error code ${response.code} ignored (final already delivered)`);
+          return;
+        }
         this.emit("error", `火山 ASR 错误 ${response.code}${detail ? `：${detail}` : ""}`);
         return;
       }

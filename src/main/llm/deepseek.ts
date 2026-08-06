@@ -207,34 +207,55 @@ export class DeepSeekClient extends EventEmitter {
     if (allowedTools.length === 0) {
       log(`DeepSeekClient: all tools reached max calls, forcing final answer`);
     }
-    this.abortController = new AbortController();
-    const response = await fetch(getChatCompletionsUrl(this.baseUrl), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages,
-        stream: true,
-        max_tokens: 8192,
-        tools: allowedTools.length > 0 ? allowedTools : undefined,
-        tool_choice: allowedTools.length > 0 ? "auto" : "none",
-        thinking: {
-          type: config.llm.thinkingEnabled ? "enabled" : "disabled"
-        },
-        ...(config.llm.thinkingEnabled ? {
-          reasoning_effort: config.llm.reasoningEffort,
-          reasoningeffort: config.llm.reasoningEffort
-        } : {})
-      }),
-      signal: this.abortController.signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`DeepSeek API 错误 ${response.status}: ${body}`);
+    // 网络错误（fetch failed）/ 5xx / 429 自动重试：真机日志 06:32:45 一次网络抖动
+    // 直接「LLM error fetch failed」中断整轮任务，用户体验为长任务被掐断。
+    // 仅 4xx（除 429）为确定错误不重试；退避 1.5s → 3s。
+    const MAX_FETCH_ATTEMPTS = 3;
+    let response: Response | undefined;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
+      if (this.aborted) return;
+      this.abortController = new AbortController();
+      try {
+        response = await fetch(getChatCompletionsUrl(this.baseUrl), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            messages,
+            stream: true,
+            max_tokens: 8192,
+            tools: allowedTools.length > 0 ? allowedTools : undefined,
+            tool_choice: allowedTools.length > 0 ? "auto" : "none",
+            thinking: {
+              type: config.llm.thinkingEnabled ? "enabled" : "disabled"
+            },
+            ...(config.llm.thinkingEnabled ? {
+              reasoning_effort: config.llm.reasoningEffort,
+              reasoningeffort: config.llm.reasoningEffort
+            } : {})
+          }),
+          signal: this.abortController.signal,
+        });
+        if (response.ok) break;
+        const body = await response.text();
+        lastError = new Error(`DeepSeek API 错误 ${response.status}: ${body}`);
+        // 4xx（除 429）为确定错误，立即终止不再重试
+        if (response.status !== 429 && response.status < 500) break;
+      } catch (error) {
+        if (this.aborted) return;
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+      if (attempt === MAX_FETCH_ATTEMPTS) break;
+      const delay = attempt === 1 ? 1500 : 3000;
+      log(`DeepSeekClient: ${lastError instanceof Error ? lastError.message : String(lastError)} — retrying in ${delay}ms (${MAX_FETCH_ATTEMPTS - attempt} attempts left)...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    if (!response || !response.ok) {
+      throw lastError instanceof Error ? lastError : new Error("DeepSeek 网络请求失败");
     }
 
     if (!response.body) {

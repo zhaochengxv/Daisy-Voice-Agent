@@ -381,13 +381,18 @@ async function tryHandleLocalCommandEarly(text: string): Promise<boolean> {
 
 let isSessionActive = false;
 let voiceWakeMode = false; // true when woken by voice (auto-send on silence)
+let voiceEnding = false; // true while endVoiceListening 等待 ASR final：允许 final 迟到时仍进入 handleUserInput
 let wasWokenByVoice = false; // tracks if session was initiated by voice wake-up
 let voiceSilenceTimer: NodeJS.Timeout | null = null;
 let voiceStartSilenceTimer: NodeJS.Timeout | null = null;
 let earlyCommandTimer: NodeJS.Timeout | null = null;
 let asrResultConsumed = false;
 let voiceUseWhisper = false; // 连续对话模式当前 ASR 是否本地 whisper（决定安全网时长）
-const VOICE_SILENCE_MS = 3000;
+// 语音路径「停嘴后自动发送」的静音阈值。火山 partial 持续重置此计时器，
+// 因此它只影响「用户说完话后多久发送」，不影响句中停顿。v1.5.18 由 3s 降到 2s：
+// 真机日志显示唤醒→静音→发送全程感知延迟主要由这 3s 构成（发送后 ASR final 仅需
+// ~100ms），2s 仍远大于中文句中停顿，既提速又不会切句子。
+const VOICE_SILENCE_MS = 2000;
 // 唤醒/持续对话 loop back 后等待用户开口的时间。真机实测：TTS 回复播完用户
 // 需要反应时间，旧 3s 常被静音超时切断（用户感知「对话老中断」），放宽到 8s。
 const VOICE_START_SILENCE_MS = 8000;
@@ -457,6 +462,7 @@ function abortAllTasks(): void {
   // 5. Reset state
   isSessionActive = false;
   voiceWakeMode = false;
+  voiceEnding = false;
   wasWokenByVoice = false;
   toolAckPending = false;
   asrResultConsumed = false;
@@ -540,6 +546,12 @@ function wakeAndStartListening(): void {
   });
   asrSession.on("error", (message) => {
     clearEarlyCommandTimer();
+    // final 已送达并进入 LLM/处理流程后（isSessionActive 已复位），火山仍可能补发
+    // 会话结束类错误（如 45000081），此时上报会覆盖 processing/thinking 状态。
+    if (!isSessionActive) {
+      log(`ASR error ignored (session already finished): ${message}`);
+      return;
+    }
     logError("ASR error", message);
     if (safetyNetTimer) {
       clearTimeout(safetyNetTimer);
@@ -617,9 +629,10 @@ function endListening(): void {
 }
 
 function startVoiceListening(): void {
-  log("Starting voice listening mode (auto-send on 3s silence)");
+  log("Starting voice listening mode (auto-send on silence)");
   muteSystemAndPauseMedia();
   voiceWakeMode = true;
+  voiceEnding = false;
   isSessionActive = true;
   asrResultConsumed = false;
   clearEarlyCommandTimer();
@@ -672,7 +685,9 @@ function startVoiceListening(): void {
   });
   asrSession.on("final", (text) => {
     clearEarlyCommandTimer();
-    if (!voiceWakeMode) return;
+    // endVoiceListening 已置 voiceWakeMode=false 但仍在等火山 final（stop() 触发）：
+    // 此场景必须放行，否则「唤醒/静音自动发送」的命令会全部被吞（12s 安全网重置）。
+    if (!voiceWakeMode && !voiceEnding) return;
     if (asrResultConsumed) {
       log(`Voice ASR final arrived but already handled early: "${text}"`);
       return;
@@ -688,11 +703,14 @@ function startVoiceListening(): void {
     }
     sendToFloatWindow(IPC_CHANNELS.ASR_FINAL, text);
     voiceWakeMode = false;
+    voiceEnding = false;
     handleUserInput(text);
   });
   asrSession.on("error", (message) => {
     clearEarlyCommandTimer();
-    if (!voiceWakeMode) return;
+    // endVoiceListening 后火山可能补发「final 后的会话结束」类错误（如 45000081），
+    // 不应覆盖已进入处理/思考的状态；仅当仍在期待结果时上报。
+    if (!voiceWakeMode && !voiceEnding) return;
     logError("Voice ASR error", message);
     if (voiceSilenceTimer) {
       clearTimeout(voiceSilenceTimer);
@@ -704,6 +722,7 @@ function startVoiceListening(): void {
     }
     isSessionActive = false;
     voiceWakeMode = false;
+    voiceEnding = false;
     wasWokenByVoice = false;
     stopRecording();
     asrSession = null;
@@ -727,6 +746,7 @@ function endVoiceListening(): void {
   if (!voiceWakeMode) return;
   log("Ending voice listening, sending to ASR");
   voiceWakeMode = false;
+  voiceEnding = true; // 保留 final 放行位：stop() 后火山 final 迟到也能进入 handleUserInput
   if (voiceSilenceTimer) {
     clearTimeout(voiceSilenceTimer);
     voiceSilenceTimer = null;
@@ -759,6 +779,7 @@ function endVoiceListening(): void {
       log(`Early local command check from voice partial: "${partialText}"`);
       const handled = await tryHandleLocalCommandEarly(partialText);
       if (handled) {
+        voiceEnding = false;
         asrSession?.removeAllListeners();
         asrSession = null;
       }
@@ -772,6 +793,7 @@ function endVoiceListening(): void {
       log(`Voice ASR final timeout (${voiceSafetyNetMs}ms), forcing session reset`);
       isSessionActive = false;
       asrSession = null;
+      voiceEnding = false;
       updateState("idle");
       startAutoHideTimer();
     }

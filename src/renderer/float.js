@@ -128,6 +128,7 @@ let audioSource = null;
 let currentAudio = null;
 let currentAudioPath = null;
 let interrupted = false;
+let playToken = 0;
 
 const canvas = document.getElementById("orbCanvas");
 const ctx = canvas.getContext("2d");
@@ -287,6 +288,12 @@ function logToMain(msg) {
 
 diriAPI.onTtsPlay((filePath) => {
   logToMain(`[TTS_PERF] Renderer Received: ${filePath}`);
+  // 代际隔离：每来一帧 TTS_PLAY 递增 token，所有异步回调（onended/onerror/play().catch）
+  // 只有在 token 仍等于本帧 token 时才响应。旧音频被新音频替换后，其迟到回调全部作废，
+  // 避免把「全局 currentAudioPath」（此时已是新文件）误当旧文件上报 → 主进程误删正在播
+  // 放的文件（真机日志 06:57:23 连环 TTS playback ended 误删链）。
+  const token = ++playToken;
+  const thisFilePath = filePath;
   if (currentAudio) {
     currentAudio.onended = null;
     currentAudio.onerror = null;
@@ -298,7 +305,7 @@ diriAPI.onTtsPlay((filePath) => {
   if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
 
   interrupted = false;
-  currentAudioPath = filePath;
+  currentAudioPath = thisFilePath;
 
   const loadStartTime = performance.now();
   // 构造跨平台 file:// URL：Windows 反斜杠转正斜杠（file:///C:/...），
@@ -325,36 +332,44 @@ diriAPI.onTtsPlay((filePath) => {
     audioCtx.resume().catch(() => {});
   } catch {}
 
-  currentAudio.onended = () => {
+  // 本帧结束的唯一点：token 仍当前时才上报（旧的已作废），且上报的是本帧文件路径。
+  // frameDone 防止同一帧 onerror 与 play().catch() 连发两次上报（真机日志同一文件
+  // 先 Audio error 再 play() rejected，若重复上报会多跳一帧队列）。
+  let frameDone = false;
+  const onFrameDone = () => {
+    if (frameDone || token !== playToken) return;
+    frameDone = true;
     currentAudio = null;
-    if (!interrupted) diriAPI.sendTtsPlayEnded(currentAudioPath);
+    if (!interrupted) diriAPI.sendTtsPlayEnded(thisFilePath);
     currentAudioPath = null;
     cleanupAudio();
   };
-  currentAudio.onerror = (err) => {
-    logToMain(`[TTS_PERF] Audio error event: ${err ? err.message : "unknown"}`);
-    currentAudio = null;
-    if (!interrupted) diriAPI.sendTtsPlayEnded(currentAudioPath);
-    currentAudioPath = null;
-    cleanupAudio();
+
+  currentAudio.onended = () => {
+    onFrameDone();
+  };
+  currentAudio.onerror = () => {
+    logToMain(`[TTS_PERF] Audio error event: ${currentAudio ? currentAudio.error?.message || "unknown" : "unknown"}`);
+    onFrameDone();
   };
 
   logToMain(`[TTS_PERF] Calling play() for ${filePath}`);
   const playStartTime = performance.now();
   currentAudio.play()
     .then(() => {
-      logToMain(`[TTS_PERF] play() Promise resolved in ${(performance.now() - playStartTime).toFixed(1)}ms for ${filePath}`);
+      if (token === playToken) {
+        logToMain(`[TTS_PERF] play() Promise resolved in ${(performance.now() - playStartTime).toFixed(1)}ms for ${filePath}`);
+      }
     })
     .catch((err) => {
       logToMain(`[TTS_PERF] play() Promise rejected: ${err.message} for ${filePath}`);
-      currentAudio = null;
-      if (!interrupted) diriAPI.sendTtsPlayEnded(currentAudioPath);
-      currentAudioPath = null;
-      cleanupAudio();
+      onFrameDone();
     });
 });
 
 diriAPI.onTtsEnd(() => {
+  // 终止一切在途回调：递增 token 使旧音频的迟到 onended/onerror/play().catch 全部作废
+  playToken++;
   interrupted = true;
   if (currentAudio) {
     currentAudio.onended = null;
