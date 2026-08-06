@@ -317,7 +317,7 @@ function buildSpherePoints(n) {
   }
   return pts;
 }
-spherePoints = buildSpherePoints(160);
+spherePoints = buildSpherePoints(260);
 
 function rotateYX(x, y, z, ry, rx) {
   const cosY = Math.cos(ry), sinY = Math.sin(ry);
@@ -781,7 +781,9 @@ function render() {
   ctx.save();
   ctx.globalAlpha = opacity;
   ctx.scale(dpr, dpr);
-  ctx.translate(w / 2 + shakeX, h / 2 + shakeY + slideOffset);
+  // 悬浮漂浮：球体以 6 秒周期做 ±3px 正弦浮动，营造失重悬浮感（设计文档 2.4）
+  const floatY = Math.sin(time * 0.016) * 3;
+  ctx.translate(w / 2 + shakeX, h / 2 + shakeY + slideOffset + floatY);
   ctx.scale(orbScale * wakeScale * uiScale, orbScale * wakeScale * uiScale);
   ctx.translate(-w / 2, -h / 2);
 
@@ -829,7 +831,7 @@ function render() {
   // 否则隐藏时球已透明而能量层全亮度残留、mini 形态不同步放大。
   ctx.save();
   ctx.globalAlpha = opacity;
-  ctx.translate(w / 2 + shakeX, h / 2 + shakeY + slideOffset);
+  ctx.translate(w / 2 + shakeX, h / 2 + shakeY + slideOffset + floatY);
   ctx.scale(orbScale * wakeScale * uiScale, orbScale * wakeScale * uiScale);
   ctx.translate(-w / 2, -h / 2);
   drawEnergyField(cx, cy, radius, currentState, bands);
@@ -1076,8 +1078,8 @@ function draw3DPointSphere(cx, cy, radius, activeState) {
   for (let i = 0; i < n; i++) {
     const d = proj[i];
     const depth01 = (d.z + 1) / 2;
-    const size = 1.35 * d.depth + 0.35;
-    const alpha = 0.06 + depth01 * 0.55;
+    const size = 1.9 * d.depth + 0.45;
+    const alpha = 0.08 + depth01 * 0.62;
     // 深处偏状态色，近处偏高亮
     const mix = depth01;
     const cr = Math.floor(lerp(rgb.r, hrgb.r, mix * 0.9));
@@ -1106,9 +1108,22 @@ function drawThreePointLighting(cx, cy, radius, activeState, bands) {
     cx - radius * 0.38, cy - radius * 0.42, radius * 1.05
   );
   keyGrad.addColorStop(0, palette.keyLight);
-  keyGrad.addColorStop(0.55, "rgba(255,255,255,0.10)");
+  keyGrad.addColorStop(0.4, "rgba(255,255,255,0.18)");
+  keyGrad.addColorStop(0.62, "rgba(255,255,255,0.08)");
   keyGrad.addColorStop(1, "rgba(255,255,255,0)");
   ctx.fillStyle = keyGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 1b. 高光热区：主光中心再加一道更小更亮的点，形成"球面最高点"的镜面泛光
+  const hotGrad = ctx.createRadialGradient(
+    cx - radius * 0.34, cy - radius * 0.38, 0,
+    cx - radius * 0.34, cy - radius * 0.38, radius * 0.42
+  );
+  hotGrad.addColorStop(0, "rgba(255,255,255,0.34)");
+  hotGrad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = hotGrad;
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
@@ -1125,6 +1140,24 @@ function drawThreePointLighting(cx, cy, radius, activeState, bands) {
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
+
+  // 2b. 明暗分界线（Terminator）：受光面亮、背光面暗的强对比是"球体立体感"的核心来源。
+  // 在右下阴影侧叠加压暗层，让球体呈现明确的体积转折，而不是一团平铺的渐变。
+  ctx.globalCompositeOperation = "source-over";
+  const termGrad = ctx.createRadialGradient(
+    cx - radius * 0.30, cy - radius * 0.35, radius * 0.05,
+    cx - radius * 0.30, cy - radius * 0.35, radius * 1.32
+  );
+  termGrad.addColorStop(0, "rgba(0,0,0,0)");
+  termGrad.addColorStop(0.45, "rgba(0,0,0,0)");
+  termGrad.addColorStop(0.70, "rgba(0,0,0,0.24)");
+  termGrad.addColorStop(0.88, "rgba(0,0,0,0.50)");
+  termGrad.addColorStop(1, "rgba(0,0,0,0.60)");
+  ctx.fillStyle = termGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalCompositeOperation = "screen";
 
   // 3. 轮廓光（左上边缘描边）：主光对侧产生逆光轮廓，说话时随音量增亮
   const rimBoost = activeState === "speaking" ? vol * 0.18 : 0;
@@ -1246,16 +1279,32 @@ function drawDeepSpaceCore(cx, cy, radius, activeState, bands) {
 /** 底部环境反光：球体下缘内侧的柔和环境光，让球体"坐"在环境里而非悬浮贴片 */
 function drawBaseReflection(cx, cy, radius) {
   ctx.save();
+  // 底部内反射：球体下缘内侧的柔和环境光，让球体"坐"在环境里而非悬浮贴片
   const g = ctx.createRadialGradient(
     cx, cy + radius * 0.72, radius * 0.05,
     cx, cy + radius * 0.95, radius * 0.72
   );
-  g.addColorStop(0, "rgba(255, 255, 255, 0.14)");
-  g.addColorStop(0.55, "rgba(255, 255, 255, 0.04)");
+  g.addColorStop(0, "rgba(255, 255, 255, 0.20)");
+  g.addColorStop(0.5, "rgba(255, 255, 255, 0.07)");
   g.addColorStop(1, "rgba(255, 255, 255, 0)");
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 地面接触阴影：球体正下方一道贴地暗影（与主光方向一致的椭球投影），
+  // 强化「球浮在桌面上空」的空间感——立体感的另一半来自影子。
+  const shadowG = ctx.createRadialGradient(
+    cx, cy + radius * 1.02, radius * 0.04,
+    cx, cy + radius * 0.98, radius * 0.82
+  );
+  shadowG.addColorStop(0, "rgba(0, 0, 0, 0.30)");
+  shadowG.addColorStop(0.55, "rgba(0, 0, 0, 0.16)");
+  shadowG.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = shadowG;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius * 1.06, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
@@ -1611,15 +1660,28 @@ function drawGlassHighlights(cx, cy, radius, activeState, isDark) {
   // 镜面高光点：左上偏上的小柔光斑，模拟单一光源在玻璃球面的直接反射（体积感关键）
   const sx = cx - radius * 0.36;
   const sy = cy - radius * 0.42;
-  const specG = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius * 0.20);
-  specG.addColorStop(0, "rgba(255,255,255,0.42)");
-  specG.addColorStop(0.35, "rgba(255,255,255,0.10)");
+  const specR = radius * 0.20;
+  const specG = ctx.createRadialGradient(sx, sy, 0, sx, sy, specR);
+  specG.addColorStop(0, "rgba(255,255,255,0.78)");
+  specG.addColorStop(0.22, "rgba(255,255,255,0.34)");
+  specG.addColorStop(0.6, "rgba(255,255,255,0.08)");
   specG.addColorStop(1, "rgba(255,255,255,0)");
   ctx.save();
   ctx.globalCompositeOperation = "screen";
   ctx.fillStyle = specG;
   ctx.beginPath();
-  ctx.arc(sx, sy, radius * 0.20, 0, Math.PI * 2);
+  ctx.arc(sx, sy, specR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 高光核心小亮点：更小更锐的主反射点，让球面"材质"浮现
+  const coreR = specR * 0.38;
+  const coreG = ctx.createRadialGradient(sx, sy, 0, sx, sy, coreR);
+  coreG.addColorStop(0, "rgba(255,255,255,0.95)");
+  coreG.addColorStop(0.55, "rgba(255,255,255,0.35)");
+  coreG.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = coreG;
+  ctx.beginPath();
+  ctx.arc(sx, sy, coreR, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 

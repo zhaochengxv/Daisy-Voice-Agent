@@ -2012,6 +2012,11 @@ function setupIpc(): void {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logError("whisperGpu deploy failed", error);
+      // 解压/部署失败：清理损坏的 zip（tmpdir 下载残留），避免下次「找到本地文件跳过下载→解压失败」死循环
+      try {
+        const stale = path.join(os.tmpdir(), `daisy-${"whisper-cublas-12.4.0-bin-x64.zip"}`);
+        if (fs.existsSync(stale)) { fs.unlinkSync(stale); log(`whisperGpu: cleaned stale partial zip ${stale}`); }
+      } catch { /* ignore */ }
       if (error instanceof SlowNetworkError) {
         // 网络过慢：引导用户用浏览器/下载器手动下载 zip（支持断点续传+多线程），
         // 同时后台轮询常见目录，检测到文件后自动继续解压部署，全程无需重启操作。

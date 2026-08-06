@@ -97,6 +97,7 @@ export class SlowNetworkError extends Error {
 }
 
 /** 用户手动下载 zip 的本地探测候选目录（下载/桌面/临时） */
+/** 用户手动下载 zip 的本地探测候选目录（仅用户可触达的下载/桌面目录） */
 function manualDownloadCandidates(): string[] {
   const dirs: string[] = [];
   const home = os.homedir();
@@ -104,7 +105,6 @@ function manualDownloadCandidates(): string[] {
   dirs.push(path.join(home, "Desktop"));
   dirs.push(path.join(home, "下载"));
   dirs.push(path.join(home, "桌面"));
-  dirs.push(os.tmpdir());
   if (process.env.USERPROFILE) {
     dirs.push(path.join(process.env.USERPROFILE, "Downloads"));
     dirs.push(path.join(process.env.USERPROFILE, "Desktop"));
@@ -112,9 +112,41 @@ function manualDownloadCandidates(): string[] {
   return Array.from(new Set(dirs));
 }
 
+/** 期望 zip 完整大小（字节）。用于拦截半成品残留：上次下载失败的 tmp 残留也 >1MB 且带 PK 魔数，
+ *  仅凭魔数校验会把它误认为「手动下载好的文件」→ 跳过真实下载 → 解压失败 → 死循环。 */
+const EXPECTED_ZIP_BYTES = 670611449;
+
+/** 校验 zip 是否完整：PK 魔数 + 尾部 EOCD 记录（PK\x05\x06）+ 大小接近预期。
+ *  半成品/中断下载的 zip 缺 EOCD，或大小远小于预期，会被识别为损坏而丢弃。 */
+function isCompleteZip(full: string): boolean {
+  let st;
+  try { st = fs.statSync(full); } catch { return false; }
+  if (st.size < EXPECTED_ZIP_BYTES * 0.9) return false;
+  const fd = fs.openSync(full, "r");
+  try {
+    // 头部 PK\x03\x04
+    const head = Buffer.alloc(4);
+    fs.readSync(fd, head, 0, 4, 0);
+    if (!(head[0] === 0x50 && head[1] === 0x4b)) return false;
+    // 尾部 EOCD（PK\x05\x06），允许最多 64KB 注释区
+    const tailLen = Math.min(st.size, 22 + 65535);
+    const tail = Buffer.alloc(tailLen);
+    fs.readSync(fd, tail, 0, tailLen, st.size - tailLen);
+    for (let i = tail.length - 22; i >= 0; i--) {
+      if (tail[i] === 0x50 && tail[i + 1] === 0x4b && tail[i + 2] === 0x05 && tail[i + 3] === 0x06) {
+        return true;
+      }
+    }
+    return false;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /**
  * 扫描常见目录，找用户手动下载好的 GPU zip（支持别名：daisy- 前缀 / whisper-cublas-*）。
- * 找到返回完整路径；找不到返回 null。
+ * 只认完整 zip（EOCD + 大小接近预期），半成品/损坏文件一律忽略并删除，
+ * 避免上次下载失败的残留被误用而阻塞真实下载。找到返回完整路径；找不到返回 null。
  */
 export function findLocalGpuZip(): string | null {
   const names = [`daisy-${ZIP_NAME}`, ZIP_NAME];
@@ -122,15 +154,14 @@ export function findLocalGpuZip(): string | null {
     for (const name of names) {
       const full = path.join(dir, name);
       try {
-        if (fs.existsSync(full) && fs.statSync(full).size > 1024 * 1024) {
-          // 快速校验 zip 魔数，防止损坏的残留文件被误用
-          const fd = fs.openSync(full, "r");
-          const buf = Buffer.alloc(4);
-          try { fs.readSync(fd, buf, 0, 4, 0); } finally { fs.closeSync(fd); }
-          if (buf[0] === 0x50 && buf[1] === 0x4b) {
-            return full;
-          }
+        if (!fs.existsSync(full)) continue;
+        if (!isCompleteZip(full)) {
+          // 半成品/损坏文件：删除并继续，防止死循环复用
+          log(`whisperGpu: discarding incomplete zip ${full}`);
+          try { fs.unlinkSync(full); } catch { /* ignore */ }
+          continue;
         }
+        return full;
       } catch { /* ignore */ }
     }
   }
@@ -312,7 +343,7 @@ function validateZip(zipPath: string): void {
 export async function downloadWhisperGpuComponent(
   onProgress?: (progress: GpuDownloadProgress) => void
 ): Promise<string> {
-  // 优先复用用户手动下载好的 zip：下载目录/桌面/临时目录里有完整文件就直接部署
+  // 优先复用用户手动下载好的 zip（仅下载/桌面目录，且必须是完整 zip；tmp 残留早已被排除）
   const local = findLocalGpuZip();
   if (local) {
     log(`whisperGpu: found locally downloaded zip at ${local}, skipping download`);
@@ -321,6 +352,8 @@ export async function downloadWhisperGpuComponent(
 
   const sources = [...GH_MIRRORS.map((m) => `${m}${ZIP_URL}`), ZIP_URL];
   const zipPath = path.join(os.tmpdir(), `daisy-${ZIP_NAME}`);
+  // 清理 tmp 下载目标的旧残留（上次中断的半成品），避免 merge 写入已有文件时损坏或误判
+  try { if (fs.existsSync(zipPath)) { fs.unlinkSync(zipPath); log(`whisperGpu: cleaned stale download target ${zipPath}`); } } catch { /* ignore */ }
 
   log(`whisperGpu: probing ${sources.length} sources in parallel`);
   const probes = await probeSources(sources);

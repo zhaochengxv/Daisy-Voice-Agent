@@ -7,7 +7,7 @@ import { getSettingsWindow, createSettingsWindow } from "./settingsWindow";
 
 export type FloatWindowMode = "standard" | "mini" | "hidden";
 
-const ORB_SIZE = 92;
+const ORB_SIZE = 128;
 // 玻璃胶囊三区布局：左 orb（点击录音开关）+ 中状态徽标/ASR 实时文本 + 右 LLM 滚动输出。
 // 窗口四周预留 SHADOW_MARGIN 的透明内边距，让 CSS box-shadow（胶囊阴影）有渲染空间，
 // 而不是被窗口边缘裁掉。所有尺寸只在这里定义，renderer 的 float.js 按相对布局自适应。
@@ -15,7 +15,7 @@ const ASR_TEXT_WIDTH = 200;
 const LLM_OUTPUT_WIDTH = 264;
 const CONTENT_PADDING = 16;
 const SHADOW_MARGIN = 16;
-const PANEL_HEIGHT = 148;
+const PANEL_HEIGHT = 176;
 
 const WINDOW_WIDTH =
   SHADOW_MARGIN * 2 + CONTENT_PADDING * 2 + ORB_SIZE + 16 + ASR_TEXT_WIDTH + 14 + LLM_OUTPUT_WIDTH;
