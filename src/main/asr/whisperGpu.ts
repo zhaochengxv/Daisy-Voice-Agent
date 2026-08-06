@@ -47,119 +47,170 @@ const REQUIRED_FILES = [
 ];
 
 const USER_AGENT = "Daisy-Voice-Agent/1.5.23";
-const CONNECT_TIMEOUT_MS = 30000; // 建立连接/首包超时
-const IDLE_TIMEOUT_MS = 60000;    // 两次数据块之间超时（慢速网络降级）
-const TOTAL_TIMEOUT_MS = 480000;  // 单源整体时间预算：镜像一般几分钟内完成，
-                                  // 直连兜底也可能需要 5 分钟+，防止涓流永久卡 0%
+const CONNECT_TIMEOUT_MS = 15000; // 建立连接/首包超时
+const IDLE_TIMEOUT_MS = 30000;    // 两次数据块之间超时（分片级，快速失败换源）
 const MAX_REDIRECTS = 4;
+const PROBE_BYTES = 512 * 1024;   // 测速采样字节数（512KB）
+const PROBE_TIMEOUT_MS = 4000;    // 测速时长上限
+const PART_BYTES = 16 * 1024 * 1024; // 每个分片 16MB：进度平滑 + 快速换源
+const WORKERS_PER_SOURCE = 2;     // 每个可用源开 2 个并发连接
+const MAX_SOURCES = 2;            // 同时使用的源数（多源聚合带宽）
 
 /** 下载进度信息（供 UI 展示字节数/速率，避免只看整数百分比而长时间停在 0%） */
 export interface GpuDownloadProgress {
   source: string;
   received: number;
   total: number;
-  speed: number; // bytes/s，滚动估算
+  speed: number; // bytes/s
 }
 
-/** 单次下载一个源，返回 zip 本地路径 */
-function downloadFrom(
-  url: string,
-  zipPath: string,
-  onProgress?: (progress: GpuDownloadProgress) => void
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const file = fs.createWriteStream(zipPath, { flags: "w" });
-    let received = 0;
-    let done = false;
-    let redirects = 0;
-    // 速率估算：最近 5 个采样（每约 1MB 一次）的滑动窗口
-    const samples: { t: number; bytes: number }[] = [];
-    let startedAt = Date.now();
+/** 探测结果：某个源是否可用、总大小与测速速率 */
+interface SourceProbe {
+  url: string;        // 原始请求 URL（日志/进度展示）
+  finalUrl: string;   // 跟随重定向后的实际承载 URL
+  total: number;      // 文件总字节数
+  speed: number;      // 测速 bytes/s
+  supportsRange: boolean; // 支持 Range（206）→ 可参与分片
+}
 
+/** 跟随重定向发起 HTTPS GET，返回最终响应与最终 URL */
+function httpsGetFollow(
+  url: string,
+  headers: Record<string, string>
+): Promise<{ res: import("node:http").IncomingMessage; finalUrl: string }> {
+  return new Promise((resolve, reject) => {
+    const attempt = (target: string, depth: number) => {
+      const req = https.get(target, { headers: { "User-Agent": USER_AGENT, Accept: "*/*", ...headers } }, (res) => {
+        const code = res.statusCode || 0;
+        if ((code === 301 || code === 302 || code === 303 || code === 307 || code === 308) && res.headers.location) {
+          res.resume();
+          if (depth >= MAX_REDIRECTS) { reject(new Error("重定向次数过多")); return; }
+          attempt(new URL(res.headers.location, target).toString(), depth + 1);
+          return;
+        }
+        resolve({ res, finalUrl: target });
+      });
+      req.setTimeout(CONNECT_TIMEOUT_MS, () => { req.destroy(new Error("连接超时")); });
+      req.on("error", reject);
+    };
+    attempt(url, 0);
+  });
+}
+
+/** 并行探测所有源：连接 + 首 512KB 测速 + 判断 Range 支持 */
+async function probeSources(sources: string[]): Promise<SourceProbe[]> {
+  const results = await Promise.all(
+    sources.map(async (url): Promise<SourceProbe | null> => {
+      try {
+        const { res, finalUrl } = await httpsGetFollow(url, { Range: `bytes=0-${PROBE_BYTES - 1}` });
+        const code = res.statusCode || 0;
+        if (code !== 200 && code !== 206) {
+          res.resume();
+          return null;
+        }
+        // 206 时 content-range 带文件总长；200（忽略 Range）时 content-length 即总长
+        let total = 0;
+        const cr = res.headers["content-range"];
+        if (cr) {
+          const m = /\/\s*(\d+)/.exec(cr);
+          if (m) total = parseInt(m[1], 10);
+        }
+        if (total <= 0) total = parseInt(res.headers["content-length"] || "0", 10);
+        let received = 0;
+        const t0 = Date.now();
+        res.on("data", (c: Buffer) => {
+          received += c.length;
+          if (received >= PROBE_BYTES) res.destroy();
+        });
+        await new Promise<void>((finish) => {
+          res.on("end", () => finish());
+          res.on("close", () => finish());
+          res.on("error", () => finish());
+          setTimeout(() => { try { res.destroy(); } catch { /* ignore */ } finish(); }, PROBE_TIMEOUT_MS);
+        });
+        const elapsed = (Date.now() - t0) / 1000;
+        const speed = elapsed > 0 ? received / elapsed : 0;
+        if (received <= 0 || total <= 0) return null;
+        return { url, finalUrl, total, speed, supportsRange: code === 206 };
+      } catch {
+        return null;
+      }
+    })
+  );
+  return results.filter((p): p is SourceProbe => p !== null);
+}
+
+/** 下载一个分片 [start,end] 到 partPath；源忽略 Range（200）且非首片时视为失败 */
+function downloadPart(target: SourceProbe, start: number, end: number, partPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(partPath, { flags: "w" });
+    let done = false;
     const fail = (err: Error): void => {
       if (done) return;
       done = true;
       file.close();
-      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(partPath); } catch { /* ignore */ }
       reject(err);
     };
-
-    const fetchOnce = (target: string): void => {
-      const req = https.get(
-        target,
-        { headers: { "User-Agent": USER_AGENT, Accept: "*/*" } },
-        (response) => {
-          const code = response.statusCode || 0;
-          if ((code === 301 || code === 302 || code === 303 || code === 307 || code === 308) && response.headers.location) {
-            response.resume();
-            redirects++;
-            if (redirects > MAX_REDIRECTS) {
-              fail(new Error("重定向次数过多"));
-              return;
-            }
-            // 相对重定向拼接完整 URL
-            const next = new URL(response.headers.location, target).toString();
-            fetchOnce(next);
-            return;
-          }
-          if (code !== 200) {
-            response.resume();
-            fail(new Error(`HTTP ${code}`));
-            return;
-          }
-          const total = parseInt(response.headers["content-length"] || "0", 10);
-          startedAt = Date.now();
-          response.setTimeout(IDLE_TIMEOUT_MS, () => {
-            response.destroy();
-            fail(new Error("下载超时（长时间无数据）"));
-          });
-          response.on("data", (chunk: Buffer) => {
-            received += chunk.length;
-            const now = Date.now();
-            if (received - samples[0]?.bytes >= 1024 * 1024 || samples.length === 0) {
-              samples.push({ t: now, bytes: received });
-              if (samples.length > 5) samples.shift();
-            }
-            const speed = (() => {
-              if (samples.length < 2) return 0;
-              const span = samples[samples.length - 1].t - samples[0].t;
-              if (span <= 0) return 0;
-              return Math.round((samples[samples.length - 1].bytes - samples[0].bytes) / span * 1000);
-            })();
-            if (total > 0) {
-              onProgress?.({ source: target, received, total, speed });
-            }
-            // 背压：写缓冲满时暂停读取，等待 drain，避免大文件内存膨胀
-            if (!file.write(chunk)) {
-              response.pause();
-              file.once("drain", () => response.resume());
-            }
-          });
-          response.on("end", () => file.end());
-          response.on("error", (err) => fail(err));
+    httpsGetFollow(target.finalUrl, { Range: `bytes=${start}-${end}` })
+      .then(({ res }) => {
+        const code = res.statusCode || 0;
+        if (code === 200 && start > 0) {
+          // 源忽略 Range 返回全量：从 start 起写入会错位，视为不支持 Range
+          res.resume();
+          fail(new Error("该源不支持断点续传"));
+          return;
         }
-      );
-      req.setTimeout(CONNECT_TIMEOUT_MS, () => {
-        req.destroy(new Error("连接超时"));
-      });
-      // 整体时间预算：即使数据在涓流，超过预算也换源，避免用户看到长期 0%
-      const budgetTimer = setTimeout(() => {
-        req.destroy(new Error("下载过慢（超过时间预算）"));
-      }, TOTAL_TIMEOUT_MS);
-      budgetTimer.unref?.();
-      req.on("error", (err) => fail(err));
-    };
-
-    file.on("error", (err) => fail(err));
+        if (code !== 200 && code !== 206) {
+          res.resume();
+          fail(new Error(`HTTP ${code}`));
+          return;
+        }
+        res.setTimeout(IDLE_TIMEOUT_MS, () => {
+          res.destroy();
+          fail(new Error("分片下载超时（长时间无数据）"));
+        });
+        res.on("data", (chunk: Buffer) => {
+          if (!file.write(chunk)) {
+            res.pause();
+            file.once("drain", () => res.resume());
+          }
+        });
+        res.on("end", () => file.end());
+        res.on("error", fail);
+      })
+      .catch(fail);
+    file.on("error", fail);
     file.on("finish", () => {
       if (done) return;
       done = true;
-      const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-      log(`whisperGpu: downloaded ${received} bytes from ${url} in ${seconds}s`);
       resolve();
     });
+  });
+}
 
-    fetchOnce(url);
+/** 按序拼接全部分片为最终 zip，合并后删除分片 */
+function mergeParts(zipPath: string, partPaths: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(zipPath);
+    let index = 0;
+    const next = (): void => {
+      if (index >= partPaths.length) {
+        out.end();
+        return;
+      }
+      const part = partPaths[index++];
+      const rs = fs.createReadStream(part);
+      rs.on("error", reject);
+      rs.on("end", () => {
+        try { fs.unlinkSync(part); } catch { /* ignore */ }
+        next();
+      });
+      rs.pipe(out, { end: false });
+    };
+    out.on("error", reject);
+    out.on("finish", resolve);
+    next();
   });
 }
 
@@ -184,40 +235,167 @@ function validateZip(zipPath: string): void {
 
 /**
  * 下载官方 CUDA 版 whisper（约 670MB），返回本地 zip 路径，进度经 onProgress 上报。
- * 镜像优先（国内速度快）→ 直连 GitHub 兜底；每源带连接超时、空闲读超时与整体时间预算。
+ *
+ * 网络策略（v1.5.23 用户反馈：单个镜像源串行尝试 + 超长超时，用户网络下三源全废、
+ * 干等十几分钟）。本实现改为：
+ * 1. 所有源【并行】探测连接与测速（≤4s），瞬时找出可用源，绝不串行干等；
+ * 2. 取最快的若干源，按 16MB 分片【并发下载】——哪个源快谁多干活，带宽聚合；
+ * 3. 任一分片失败立即【换源续传】（Range 断点），不重头再来；
+ * 4. 全部分片完成后按序拼接 + 校验 zip 魔数。
  */
 export async function downloadWhisperGpuComponent(
   onProgress?: (progress: GpuDownloadProgress) => void
 ): Promise<string> {
-  // 镜像优先，直连 GitHub 放最后（国内直连最慢）
   const sources = [...GH_MIRRORS.map((m) => `${m}${ZIP_URL}`), ZIP_URL];
-  let lastError: Error | null = null;
-  for (const src of sources) {
-    const zipPath = path.join(os.tmpdir(), `daisy-${ZIP_NAME}`);
-    log(`whisperGpu: trying ${src}`);
-    // 定期（每约 10%）记录一次进度，便于真机日志定位卡点
-    let lastLoggedPct = 0;
-    try {
-      await downloadFrom(src, zipPath, (progress) => {
-        const pct = Math.floor((progress.received / progress.total) * 1000) / 10;
-        if (pct - lastLoggedPct >= 10) {
-          lastLoggedPct = pct;
-          log(`whisperGpu: ${pct}% (${progress.received}/${progress.total} bytes)`);
-        }
-        onProgress?.({ ...progress, source: src });
-      });
-      validateZip(zipPath);
-      return zipPath;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      logError(`whisperGpu: source failed ${src}`, lastError);
-      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
-      if (onProgress) onProgress({ source: src, received: 0, total: 0, speed: 0 });
-    }
+  const zipPath = path.join(os.tmpdir(), `daisy-${ZIP_NAME}`);
+
+  log(`whisperGpu: probing ${sources.length} sources in parallel`);
+  const probes = await probeSources(sources);
+  const available = probes
+    .filter((p) => p.speed > 0)
+    .sort((a, b) => b.speed - a.speed);
+  if (available.length === 0) {
+    throw new Error(`所有下载源均不可用。可手动下载 ${ZIP_URL} 后重试。`);
   }
-  throw new Error(
-    `下载失败（${lastError?.message || "未知错误"}）。可手动下载 ${ZIP_URL} 后重试。`
+  log(
+    `whisperGpu: ${available.length} source(s) available: ` +
+    available.map((p) => `${p.url} ${(p.speed / 1024).toFixed(0)}KB/s${p.supportsRange ? " (range)" : ""}`).join(", ")
   );
+
+  const total = available[0].total;
+  const rangeSources = available.filter((p) => p.supportsRange);
+  const workers: { url: string }[] = [];
+
+  if (rangeSources.length > 0) {
+    // 多源分片并发：取最快的源，每源 WORKERS_PER_SOURCE 个并发连接
+    const active = rangeSources.slice(0, MAX_SOURCES);
+    for (const src of active) {
+      for (let i = 0; i < WORKERS_PER_SOURCE; i++) workers.push({ url: src.url });
+    }
+
+    const partPaths: string[] = [];
+    const partCount = Math.ceil(total / PART_BYTES);
+    const parts = Array.from({ length: partCount }, (_, i) => {
+      const start = i * PART_BYTES;
+      const end = i === partCount - 1 ? total - 1 : Math.min(start + PART_BYTES - 1, total - 1);
+      return { index: i, start, end, done: false };
+    });
+    partPaths.push(...parts.map((p) => `${zipPath}.part${p.index}`));
+
+    const report = { received: 0 };
+    let cursor = 0;
+    const pickNext = (): { index: number; start: number; end: number; done: boolean } | null => {
+      while (cursor < parts.length && parts[cursor].done) cursor++;
+      if (cursor >= parts.length) return null;
+      return parts[cursor];
+    };
+
+    const t0 = Date.now();
+    await Promise.all(
+      workers.map(async (worker, wi) => {
+        let part: { index: number; start: number; end: number; done: boolean } | null;
+        while ((part = pickNext()) !== null) {
+          const partIdx = part.index;
+          let success = false;
+          // 换源重试：先从最快的源开始，失败后轮换其余源
+          for (let attempt = 0; attempt <= active.length; attempt++) {
+            const src = active[(wi + attempt) % active.length];
+            try {
+              await downloadPart(src, part.start, part.end, `${zipPath}.part${partIdx}`);
+              success = true;
+              break;
+            } catch (err) {
+              logError(`whisperGpu: part ${partIdx} from ${src.url} failed`, err);
+            }
+          }
+          if (!success) {
+            throw new Error(`下载失败：分片 ${partIdx} 所有源重试均失败`);
+          }
+          part.done = true;
+          report.received += part.end - part.start + 1;
+          const elapsed = Math.max(1, (Date.now() - t0) / 1000);
+          const pct = Math.floor((report.received / total) * 1000) / 10;
+          log(`whisperGpu: ${pct}% (${report.received}/${total} bytes, ${Math.round(report.received / elapsed / 1024)}KB/s)`);
+          onProgress?.({
+            source: worker.url,
+            received: report.received,
+            total,
+            speed: Math.round(report.received / elapsed),
+          });
+        }
+      })
+    );
+
+    await mergeParts(zipPath, partPaths);
+    log(`whisperGpu: merged ${partCount} parts -> ${zipPath}`);
+  } else {
+    // 无源支持 Range：退化为单源整包下载（首个最快源）
+    const src = available[0];
+    log(`whisperGpu: no Range support, falling back to single-source download from ${src.url}`);
+    const t0 = Date.now();
+    await downloadWhole(src, zipPath, (received) => {
+      const elapsed = Math.max(1, (Date.now() - t0) / 1000);
+      onProgress?.({
+        source: src.url,
+        received,
+        total,
+        speed: Math.round(received / elapsed),
+      });
+    });
+  }
+
+  validateZip(zipPath);
+  return zipPath;
+}
+
+/** 单源整包下载（无 Range 支持时的兜底路径） */
+function downloadWhole(
+  target: SourceProbe,
+  zipPath: string,
+  onChunk: (received: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(zipPath, { flags: "w" });
+    let received = 0;
+    let done = false;
+    const fail = (err: Error): void => {
+      if (done) return;
+      done = true;
+      file.close();
+      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      reject(err);
+    };
+    httpsGetFollow(target.finalUrl, {})
+      .then(({ res }) => {
+        const code = res.statusCode || 0;
+        if (code !== 200) {
+          res.resume();
+          fail(new Error(`HTTP ${code}`));
+          return;
+        }
+        res.setTimeout(IDLE_TIMEOUT_MS, () => {
+          res.destroy();
+          fail(new Error("下载超时（长时间无数据）"));
+        });
+        res.on("data", (chunk: Buffer) => {
+          received += chunk.length;
+          onChunk(received);
+          if (!file.write(chunk)) {
+            res.pause();
+            file.once("drain", () => res.resume());
+          }
+        });
+        res.on("end", () => file.end());
+        res.on("error", fail);
+      })
+      .catch(fail);
+    file.on("error", fail);
+    file.on("finish", () => {
+      if (done) return;
+      done = true;
+      resolve();
+    });
+  });
 }
 
 /** 从 PowerShell 抛出的错误中提取 stderr，便于把真实失败原因透传 UI */

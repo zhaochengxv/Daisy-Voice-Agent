@@ -171,7 +171,7 @@ function buildSpherePoints(n) {
   }
   return pts;
 }
-spherePoints = buildSpherePoints(360);
+spherePoints = buildSpherePoints(160);
 
 function rotateYX(x, y, z, ry, rx) {
   const cosY = Math.cos(ry), sinY = Math.sin(ry);
@@ -611,9 +611,9 @@ function render() {
   // 转速度：idle ~8.7s/圈、listening ~5s/圈、thinking ~4.2s/圈（time 每帧推进，
   // 基值 0.012/帧@60fps = 0.72rad/s），状态越活跃转得越快。
   const activeSpeed = targetConfigs[currentState] ? targetConfigs[currentState].speed : 0.35;
-  sphereRotY += 0.012 + activeSpeed * 0.020 + spinBoost * 0.03;
+  sphereRotY += 0.018 + activeSpeed * 0.026 + spinBoost * 0.03;
   spinBoost = lerp(spinBoost, 0, 0.02);
-  const targetTiltX = cursorGlowActive ? (lastPointerV - 0.5) * 0.65 : 0;
+  const targetTiltX = cursorGlowActive ? (lastPointerV - 0.5) * 0.70 : 0;
   const targetTiltY = cursorGlowActive ? (lastPointerU - 0.5) * 0.85 : 0;
   tiltX = lerp(tiltX, targetTiltX, 0.08);
   tiltY = lerp(tiltY, targetTiltY, 0.08);
@@ -920,8 +920,8 @@ function draw3DPointSphere(cx, cy, radius, activeState) {
   for (let i = 0; i < n; i++) {
     const d = proj[i];
     const depth01 = (d.z + 1) / 2;
-    const size = 1.0 * d.depth + 0.35;
-    const alpha = 0.05 + depth01 * 0.30;
+    const size = 1.15 * d.depth + 0.4;
+    const alpha = 0.10 + depth01 * 0.42;
     // 深处偏状态色，近处偏高亮
     const mix = depth01;
     const cr = Math.floor(lerp(rgb.r, hrgb.r, mix * 0.85));
@@ -959,10 +959,10 @@ function drawDeepSpaceCore(cx, cy, radius, activeState, bands) {
   const coreAmp = 0.5 + hoverEnergy * 0.5; // hover 时核心更亮
 
   // 2. 白色等离子核心（内部体积光，深空能量的"燃点"）
-  const coreR = radius * 0.30;
+  const coreR = radius * 0.32;
   const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
-  coreGrad.addColorStop(0, `rgba(255,255,255,${0.85 * coreAmp})`);
-  coreGrad.addColorStop(0.4, `rgba(255,255,255,${0.34 * coreAmp})`);
+  coreGrad.addColorStop(0, `rgba(255,255,255,${0.95 * coreAmp})`);
+  coreGrad.addColorStop(0.4, `rgba(255,255,255,${0.42 * coreAmp})`);
   coreGrad.addColorStop(1, "rgba(255,255,255,0)");
   ctx.save();
   ctx.globalCompositeOperation = "screen";
