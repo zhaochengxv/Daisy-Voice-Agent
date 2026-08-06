@@ -4,6 +4,14 @@ import path from "node:path";
 import os from "node:os";
 import { log } from "../utils/logger";
 import { runPowerShell } from "../utils/windowsShell";
+import {
+  extractPdfTextViaPython,
+  pdfToDocxViaPython,
+  editPdfText,
+  pdfToExcelText,
+  readExcelText,
+  runPythonText,
+} from "../utils/pythonTools";
 
 const execFileAsync = promisify(execFile);
 
@@ -1175,6 +1183,74 @@ Write-Output "OK"`;
   }
 }
 
+/** 人类可读的文件大小 */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * Word COM 转换：打开源文件 → SaveAs2 → 退出，并做「落盘校验」。
+ * 真机日志根因：`SaveAs2` 即使没写任何文件也常返回成功，导致 `convert_document`
+ * 报「转换成功」但文件并不存在，LLM 信以为真疯狂找文件浪费大量步数。
+ * 这里用 Test-Path + 文件大小双重校验，产物不存在/为空一律按失败返回。
+ */
+async function convertViaWordCom(src: string, dst: string, fmt: number, openAsText = false): Promise<{
+  ok: boolean; noWord?: boolean; message?: string; detail?: string;
+}> {
+  const script = `
+try { $word = New-Object -ComObject Word.Application } catch { Write-Output "NO_WORD"; exit }
+$word.Visible = $false
+$word.DisplayAlerts = 0
+try {
+  $doc = $word.Documents.Open($env:DAISY_ARG0, $false, $false, $false, "", "", $false, "", "", ${openAsText ? 7 : 0}, 0, $false)
+  $doc.SaveAs2($env:DAISY_ARG1, ${fmt})
+  $doc.Close(0)
+} catch {
+  Write-Output ("COM_ERR: " + $_.Exception.Message)
+} finally {
+  $word.Quit()
+}
+if (Test-Path -LiteralPath $env:DAISY_ARG1) {
+  $len = (Get-Item -LiteralPath $env:DAISY_ARG1).Length
+  if ($len -gt 0) { Write-Output ("OUTPUT_OK:" + $len) } else { Write-Output "OUTPUT_EMPTY" }
+} else {
+  Write-Output "OUTPUT_MISSING"
+}`;
+  const result = await runPowerShell(script, { args: [src, dst], timeoutMs: 90000 });
+  if (result.includes("NO_WORD")) return { ok: false, noWord: true };
+  const m = /OUTPUT_OK:(\d+)/.exec(result);
+  if (m && Number(m[1]) > 0) {
+    return { ok: true, message: `已转换文档，保存至「${path.basename(dst)}」（${formatBytes(Number(m[1]))}）` };
+  }
+  if (result.includes("OUTPUT_EMPTY")) return { ok: false, detail: "输出文件为空（可能是扫描图片版，无文本层，需 OCR）" };
+  if (result.includes("OUTPUT_MISSING")) return { ok: false, detail: "Word 未生成输出文件" };
+  const err = /COM_ERR:\s*(.+)/.exec(result);
+  return { ok: false, detail: err ? err[1].trim() : result.trim() || "Word 未生成输出文件" };
+}
+
+/**
+ * 用 Python + PyMuPDF 提取 PDF 文本。对无文本层（扫描版）PDF 返回空结果并明确
+ * 说明，避免 LLM 误以为转换失败而去反复探测环境。统一走 pythonRuntime 解析器
+ * （优先命中 C:\pytools 便携版，再回退 py / python）。
+ */
+async function extractPdfTextWithPython(src: string, dst: string): Promise<{
+  ok: boolean; message?: string; reason?: "no_python" | "no_pymupdf" | "empty" | "failed";
+}> {
+  const r = await extractPdfTextViaPython(src, dst);
+  if (r.ok && r.output) {
+    const m = /OK:(\d+)/.exec(r.output);
+    if (m && Number(m[1]) > 0) {
+      return { ok: true, message: `已转换文档，保存至「${path.basename(dst)}」（${formatBytes(Number(m[1]))}）` };
+    }
+    return { ok: false, reason: "empty" };
+  }
+  if (r.missingPython) return { ok: false, reason: "no_python" };
+  if (r.missingLibs) return { ok: false, reason: "no_pymupdf" };
+  return { ok: false, reason: "failed" };
+}
+
 /** Windows 文档互转：Word COM 打开源文件后 SaveAs 目标格式；txt/md 纯文本直转不经 Word */
 export async function convertDocument(source: string, target: string): Promise<string> {
   try {
@@ -1189,32 +1265,56 @@ export async function convertDocument(source: string, target: string): Promise<s
     const isText = (e: string) => e === ".txt" || e === ".md";
     const targetExt = dstExt || ".txt";
 
-    // 纯文本互转（txt/md 双向）：不依赖 Word，直接读写
+    // 纯文本互转（txt/md 双向）：不依赖 Word，直接读写，落盘确定性强
     if (isText(srcExt) && isText(targetExt)) {
       fs.writeFileSync(dst, fs.readFileSync(src, "utf8"), "utf8");
       return `已转换文档，保存至「${path.basename(dst)}」`;
     }
 
+    // PDF → 文本类（txt/md）：优先 Python+PyMuPDF（对扫描版报错清晰），Word 兜底
+    if (srcExt === ".pdf" && isText(targetExt)) {
+      const py = await extractPdfTextWithPython(src, dst);
+      if (py.ok && py.message) return py.message;
+      if (py.reason === "empty") {
+        return `PDF 文本提取结果为 0 字节：该 PDF 可能是扫描图片版（无文本层），本机无法自动提取文字。需 OCR 或人工处理；若确为文本版，可安装 Python 后 pip install pymupdf 再重试。`;
+      }
+      const word = await convertViaWordCom(src, dst, 7, false);
+      if (word.ok && word.message) return word.message;
+      if (word.noWord) return OFFICE_NOT_FOUND;
+      return `PDF 文本提取失败：${word.detail ?? ""}${py.reason === "no_python" ? "。检测到本机未安装 Python，可安装便携版 Python 并执行 pip install pymupdf 后重试" : ""}`;
+    }
+
+    // PDF → DOCX：优先 pdf2docx（保留版面/表格），Word COM 兜底
+    if (srcExt === ".pdf" && dstExt === ".docx") {
+      const pd = await pdfToDocxViaPython(src, dst);
+      if (pd.ok && pd.output) {
+        const m = /OK:(\d+)/.exec(pd.output);
+        if (m && Number(m[1]) > 0) {
+          return `已转换文档，保存至「${path.basename(dst)}」（${formatBytes(Number(m[1]))}）`;
+        }
+      }
+      const word = await convertViaWordCom(src, dst, 16, false);
+      if (word.ok && word.message) return word.message;
+      if (word.noWord) return OFFICE_NOT_FOUND;
+      return `PDF 转 DOCX 失败：${word.detail ?? "pdf2docx 与 Word 均未能生成文件"}${pd.missingLibs ? "（可 pip install pdf2docx 后重试，排版保留更佳）" : ""}`;
+    }
+
+    // PDF → XLSX：pdfplumber 提取表格写 Excel（财务报表类工作流）
+    if (srcExt === ".pdf" && dstExt === ".xlsx") {
+      return await pdfToExcelText(src, dst);
+    }
+
+    // 其余格式互转：Word COM + 落盘校验
     const fmtMap: Record<string, number> = {
       ".txt": 2, ".html": 8, ".htm": 8, ".rtf": 6,
       ".pdf": 17, ".doc": 0, ".docx": 16, ".odt": 23,
     };
     const fmt = fmtMap[targetExt] ?? 16;
     const openAsText = isText(srcExt);
-
-    const script = `
-try { $word = New-Object -ComObject Word.Application } catch { Write-Output "NO_WORD"; exit }
-$word.Visible = $false
-$word.DisplayAlerts = 0
-$doc = $word.Documents.Open($env:DAISY_ARG0, $false, $false, $false, "", "", $false, "", "", ${openAsText ? 7 : 0}, 0, $false)
-$doc.SaveAs2($env:DAISY_ARG1, ${fmt})
-$doc.Close(0)
-$word.Quit()
-Write-Output "OK"`;
-    const result = await runPowerShell(script, { args: [src, dst], timeoutMs: 90000 });
-    if (result.includes("NO_WORD")) return OFFICE_NOT_FOUND;
-    if (result.trim() === "OK") return `已转换文档，保存至「${path.basename(dst)}」`;
-    return `文档转换失败: ${result}`;
+    const word = await convertViaWordCom(src, dst, fmt, openAsText);
+    if (word.ok && word.message) return word.message;
+    if (word.noWord) return OFFICE_NOT_FOUND;
+    return `文档转换失败：${word.detail ?? "Word 未生成输出文件"}`;
   } catch (error) {
     return isNoOfficeError(error) ? OFFICE_NOT_FOUND : `文档转换失败: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -1389,4 +1489,31 @@ Invoke-Expression $env:DAISY_ARG0 2>&1`, { args: [fullCommand], timeoutMs: infer
     }
     return { stdout: "", stderr: message + hint };
   }
+}
+
+/**
+ * PDF 编辑（PyMuPDF）：find/fill/delete/replace。跨平台实现，
+ * Windows 从「仅支持 macOS」降级彻底移除。无 Python 或缺 pymupdf 时给出安装引导。
+ */
+export async function editPdf(
+  source: string, target: string, operation: string,
+  query?: string, anchor?: string, text?: string, color?: string,
+  fontsize?: number, mode?: string, replaceWith?: string
+): Promise<string> {
+  return await editPdfText(source, target, operation, { query, anchor, text, color, fontsize, mode, replaceWith });
+}
+
+/** PDF 表格提取 → Excel（pdfplumber + openpyxl） */
+export async function pdfToExcel(source: string, target: string): Promise<string> {
+  return await pdfToExcelText(source, target);
+}
+
+/** 读取 Excel 内容为 JSON（openpyxl），供 LLM 直接分析表格数据 */
+export async function readExcel(source: string, maxRows = 200): Promise<string> {
+  return await readExcelText(source, maxRows);
+}
+
+/** 通用 Python 脚本执行（Python 库技能包：pandas 数据分析、批处理等） */
+export async function runPython(code: string, args: string[] = []): Promise<string> {
+  return await runPythonText(code, args);
 }

@@ -894,6 +894,51 @@ export const availableTools: ToolDefinition[] = [
       }
     }
   },
+  {
+    type: "function",
+    function: {
+      name: "run_python",
+      description: "执行任意 Python 3 脚本，用于复杂数据处理（pandas 数据分析、文件批量处理、格式转换、抓取解析等），Python 库技能包的核心。自动检测本机 Python 环境（含 C:\\pytools 便携版），缺库时会给出 pip install 安装引导。脚本内禁止用 input() 等待输入；结果用 print 输出。",
+      parameters: {
+        type: "object",
+        properties: {
+          code: { type: "string", description: "Python 3 代码" },
+          args: { type: "array", items: { type: "string" }, description: "可选命令行参数，脚本内用 sys.argv 读取（可选）" },
+        },
+        required: ["code"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "pdf_to_excel",
+      description: "从 PDF 中提取表格并保存为 Excel（.xlsx），每张表格一个独立 sheet。适合财务报表、数据表类 PDF 的结构化提取。扫描图片版 PDF（无文本层）无法提取，会明确提示需 OCR。",
+      parameters: {
+        type: "object",
+        properties: {
+          source: { type: "string", description: "源 .pdf 路径" },
+          target: { type: "string", description: "输出 .xlsx 路径" },
+        },
+        required: ["source", "target"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_excel",
+      description: "读取 Excel（.xlsx）内容为结构化 JSON（每个 sheet 的每行每列），供你直接分析表格数据。数值/日期自动格式化。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: ".xlsx 文件路径" },
+          max_rows: { type: "integer", description: "每个 sheet 最多读取行数，默认 200（可选）" },
+        },
+        required: ["path"],
+      },
+    },
+  },
 ];
 
 export interface ToolCall {
@@ -911,9 +956,10 @@ export interface ToolResult {
 }
 
 /**
- * macOS 专属、Windows 返回降级提示的工具名
+ * 纯 macOS 专属、Windows 返回降级提示的工具名。
+ * 当前所有 44 个工具均已实现跨平台能力（edit_pdf 已用 PyMuPDF 全平台实装）。
  */
-export const MAC_ONLY_TOOLS = ["edit_pdf"];
+export const MAC_ONLY_TOOLS: string[] = [];
 
 /**
  * Windows 平台工具描述替换：去除「macOS 应用」误导表述，改为 Windows 等价能力描述。
@@ -933,8 +979,11 @@ const WINDOWS_TOOL_DESCRIPTIONS: Record<string, string> = {
   read_unread_emails: "通过 Outlook 获取未读邮件（需安装 Outlook）",
   get_recent_emails: "通过 Outlook 获取最新邮件（需安装 Outlook）",
   search_emails: "通过 Outlook 搜索邮件（需安装 Outlook）",
-  convert_document: "转换文档格式（doc/docx/rtf/txt/html/pdf/odt 互转；经 Word，需安装 Microsoft Office）",
+  convert_document: "转换文档格式（doc/docx/rtf/txt/html/pdf/odt 互转；经 Word，需安装 Microsoft Office）。PDF 转 TXT/MD 优先用 Python+pymupdf：文本版 PDF 可提取；扫描图片版（无文本层）会明确报错，需 OCR。PDF 转 DOCX 用 pdf2docx（保留排版），PDF 转 XLSX 用 pdfplumber 提取表格。返回信息以实际落盘校验为准，不会虚报成功。",
   edit_document: "编辑 .docx 文档（删除指定颜色文本；经 Word，需安装 Microsoft Office）",
+  run_python: "执行任意 Python 3 脚本（Python 库技能包）。本机未装 Python 时自动给出便携版安装引导；缺 pandas/pymupdf 等库时给出 pip install 引导。",
+  pdf_to_excel: "从 PDF 提取表格并保存为 .xlsx（pdfplumber + openpyxl，无需 Office）",
+  read_excel: "读取 .xlsx 内容为结构化 JSON（openpyxl，无需 Office）",
   run_shell_command: "执行 Windows PowerShell 命令（PowerShell 5.1）。必须只用 PowerShell 5.1 兼容语法：多命令用分号「;」分隔，禁止使用 Linux/bash 语法（如 &&、||、&、2>/dev/null、grep、head、tail、findstr、where 仅用于查路径、curl 需用 curl.exe）。常用等价写法：用 dir 替代 ls、用 Get-Content 替代 cat、用 where.exe 替代 which、用 Select-String 替代 grep。需要下载文件用「curl.exe -L -o <file> <url>」，安装软件用 Start-Process。长时间运行（下载/安装/转码）会被自动延长超时，无需担心。",
 };
 
@@ -946,6 +995,14 @@ export function adaptToolsForPlatform(tools: ToolDefinition[], isWindowsPlatform
   const macOnly = new Set(MAC_ONLY_TOOLS);
   return tools.map((tool) => {
     const name = tool.function.name;
+    const winDesc = WINDOWS_TOOL_DESCRIPTIONS[name];
+    if (winDesc) {
+      // 有 Windows 专属描述的优先使用（含 macOS 专属工具的可执行替代路径说明）
+      return {
+        ...tool,
+        function: { ...tool.function, description: winDesc },
+      };
+    }
     if (macOnly.has(name)) {
       return {
         ...tool,
@@ -953,13 +1010,6 @@ export function adaptToolsForPlatform(tools: ToolDefinition[], isWindowsPlatform
           ...tool.function,
           description: `${tool.function.description}（当前仅支持 macOS）`,
         },
-      };
-    }
-    const winDesc = WINDOWS_TOOL_DESCRIPTIONS[name];
-    if (winDesc) {
-      return {
-        ...tool,
-        function: { ...tool.function, description: winDesc },
       };
     }
     return tool;

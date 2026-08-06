@@ -55,10 +55,16 @@ describe("adaptToolsForPlatform", () => {
 
   it("Windows 平台已实现工具不再带仅支持 macOS 标注", () => {
     const adapted = adaptToolsForPlatform(availableTools, true);
-    for (const name of ["create_note", "search_notes", "create_reminder", "create_calendar_event", "get_calendar_events", "switch_audio_output", "send_email", "read_unread_emails", "get_recent_emails", "search_emails", "convert_document", "edit_document"]) {
+    for (const name of ["create_note", "search_notes", "create_reminder", "create_calendar_event", "get_calendar_events", "switch_audio_output", "send_email", "read_unread_emails", "get_recent_emails", "search_emails", "convert_document", "edit_document", "edit_pdf", "run_python", "pdf_to_excel", "read_excel"]) {
       const tool = adapted.find((t) => t.function.name === name);
       expect(tool, `tool ${name} should exist`).toBeDefined();
       expect(tool!.function.description, `${name} should not claim macOS-only`).not.toContain("仅支持 macOS");
     }
+  });
+
+  it("Windows 平台新增 Python 技能工具带专属描述", () => {
+    const adapted = adaptToolsForPlatform(availableTools, true);
+    const tool = adapted.find((t) => t.function.name === "pdf_to_excel");
+    expect(tool!.function.description).toContain("pdfplumber");
   });
 });

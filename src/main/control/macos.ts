@@ -12,6 +12,7 @@ import { runAppleScript } from "../utils/appleScript";
 import { switchAudioOutput as sharedSwitchAudioOutput } from "../utils/audioSwitch";
 import { isWindows } from "../utils/windowsShell";
 import * as win from "./windows";
+import { editPdfText, pdfToExcelText, readExcelText, runPythonText } from "../utils/pythonTools";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -1178,6 +1179,17 @@ async function htmlToPdfViaElectron(htmlPath: string, pdfPath: string): Promise<
   }
 }
 
+/** 校验输出文件确实落盘（存在且非空），防止工具链静默失败时虚报成功 */
+function ensureOutputWritten(dst: string): string | null {
+  try {
+    const st = fs.statSync(dst);
+    if (st.isFile() && st.size > 0) return null;
+  } catch {
+    // 文件不存在 → 走下方统一失败文案
+  }
+  return `文档转换失败：未检测到输出文件「${path.basename(dst)}」，产物未成功写入磁盘`;
+}
+
 export async function convertDocument(source: string, target: string): Promise<string> {
   if (isWindows()) return win.convertDocument(source, target);
   try {
@@ -1213,6 +1225,8 @@ export async function convertDocument(source: string, target: string): Promise<s
       } finally {
         if (temporaryHtml) await fs.promises.unlink(temporaryHtml).catch(() => {});
       }
+      const missing = ensureOutputWritten(dst);
+      if (missing) return missing;
       return `已转换为 PDF，保存至「${path.basename(dst)}」`;
     }
 
@@ -1230,12 +1244,16 @@ export async function convertDocument(source: string, target: string): Promise<s
       } finally {
         await fs.promises.unlink(tmpTxt).catch(() => {});
       }
+      const missing = ensureOutputWritten(dst);
+      if (missing) return missing;
       return `已转换文档，保存至「${path.basename(dst)}」`;
     }
 
     const targetFormat = textutilFormats[dstExt];
     if (!targetFormat) return `暂不支持转换为 ${dstExt || "无扩展名格式"}`;
     await execFileAsync("/usr/bin/textutil", ["-convert", targetFormat, "-output", dst, src], { timeout: 60000 });
+    const missing = ensureOutputWritten(dst);
+    if (missing) return missing;
     return `已转换文档，保存至「${path.basename(dst)}」`;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -1395,141 +1413,14 @@ export async function editPdf(
   query?: string, anchor?: string, text?: string, color?: string,
   fontsize?: number, mode?: string, replaceWith?: string
 ): Promise<string> {
-  if (isWindows()) {
-    // Windows 依赖 python3 + PyMuPDF(fitz) 库，工具链路径差异大，降级提示
-    return "PDF 编辑功能当前仅支持 macOS。";
-  }
+  if (isWindows()) return win.editPdf(source, target, operation, query, anchor, text, color, fontsize, mode, replaceWith);
   try {
     const src = expandPath(source);
     const dst = expandPath(target);
     if (!fs.existsSync(src)) return `找不到源文件「${source}」`;
     if (path.extname(src).toLowerCase() !== ".pdf") return `edit_pdf 仅支持 .pdf 文件`;
-
-    let script: string;
-
-    if (operation === "find") {
-      script = `import fitz
-doc = fitz.open(${JSON.stringify(src)})
-query = ${JSON.stringify(query || "")}
-results = []
-for pno in range(len(doc)):
-    page = doc[pno]
-    try:
-        rects = page.search_for(query)
-    except Exception:
-        rects = []
-    for r in rects:
-        results.append(f"页{pno+1} ({r.x0:.0f},{r.y0:.0f},{r.x1:.0f},{r.y1:.0f})")
-print(f"找到 {len(results)} 处" if results else "未找到")
-for x in results[:30]:
-    print(x)
-`;
-    } else if (operation === "fill") {
-      const c = (color || "FF0000").toUpperCase();
-      script = `import fitz
-doc = fitz.open(${JSON.stringify(src)})
-anchor = ${JSON.stringify(anchor || "")}
-text = ${JSON.stringify(text || "")}
-color_hex = ${JSON.stringify(c)}
-cr = int(color_hex[0:2], 16) / 255
-cg = int(color_hex[2:4], 16) / 255
-cb = int(color_hex[4:6], 16) / 255
-fontsize = ${fontsize ?? 11}
-fn = "helv" if all(ord(c) < 128 for c in text) else "china-s"
-count = 0
-for pno in range(len(doc)):
-    page = doc[pno]
-    rects = page.search_for(anchor)
-    for rect in rects:
-        point = fitz.Point(rect.x1 + 1, rect.y1 - 2)
-        maxw = page.rect.width - point.x - 10
-        if maxw < 20:
-            maxw = 200
-        fs = fontsize
-        while fs > 6 and fitz.get_text_length(text, fontname=fn, fontsize=fs) > maxw:
-            fs -= 0.5
-        page.insert_text(point, text, fontname=fn, fontsize=fs, color=(cr, cg, cb))
-        count += 1
-doc.save(${JSON.stringify(dst)})
-print(f"已填入 {count} 处（锚点='{anchor}'，文字='{text}'，颜色=#{color_hex}）")
-`;
-    } else if (operation === "delete") {
-      const c = (color || "FF0000").toUpperCase();
-      script = `import fitz
-doc = fitz.open(${JSON.stringify(src)})
-mode = ${JSON.stringify(mode || "text")}
-count = 0
-if mode == "color":
-    color_hex = ${JSON.stringify(c)}
-    target_int = int(color_hex, 16)
-    for pno in range(len(doc)):
-        page = doc[pno]
-        d = page.get_text("dict")
-        rects = []
-        for block in d.get("blocks", []):
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    if span.get("color") == target_int:
-                        rects.append(fitz.Rect(span["bbox"]))
-        for r in rects:
-            page.add_redact_annot(r, fill=(1, 1, 1))
-        if rects:
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-            count += len(rects)
-else:
-    target = ${JSON.stringify(text || query || "")}
-    for pno in range(len(doc)):
-        page = doc[pno]
-        rects = page.search_for(target)
-        for r in rects:
-            page.add_redact_annot(r, fill=(1, 1, 1))
-        if rects:
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-            count += len(rects)
-doc.save(${JSON.stringify(dst)})
-print(f"已删除 {count} 处（模式={mode}）")
-`;
-    } else if (operation === "replace") {
-      const c = (color || "000000").toUpperCase();
-      script = `import fitz
-doc = fitz.open(${JSON.stringify(src)})
-find_text = ${JSON.stringify(query || anchor || "")}
-new_text = ${JSON.stringify(replaceWith || text || "")}
-color_hex = ${JSON.stringify(c)}
-cr = int(color_hex[0:2], 16) / 255
-cg = int(color_hex[2:4], 16) / 255
-cb = int(color_hex[4:6], 16) / 255
-fn = "helv" if all(ord(c) < 128 for c in new_text) else "china-s"
-count = 0
-for pno in range(len(doc)):
-    page = doc[pno]
-    rects = page.search_for(find_text)
-    for r in rects:
-        page.add_redact_annot(r, fill=(1, 1, 1))
-    if rects:
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-        for r in rects:
-            point = fitz.Point(r.x0, r.y1 - 2)
-            page.insert_text(point, new_text, fontname=fn, fontsize=11, color=(cr, cg, cb))
-            count += 1
-doc.save(${JSON.stringify(dst)})
-print(f"已替换 {count} 处")
-`;
-    } else {
-      return `未知操作: ${operation}`;
-    }
-
-    const scriptPath = path.join(os.tmpdir(), `diri-edit-pdf-${Date.now()}.py`);
-    await fs.promises.writeFile(scriptPath, script, "utf-8");
-    try {
-      const { stdout, stderr } = await execAsync(`python3 "${scriptPath}"`, { timeout: 60000, env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH || ""}` } });
-      const output = stdout.trim() + (stderr.trim() ? `\nstderr: ${stderr.trim()}` : "");
-      log(`editPdf: ${output}`);
-      if (operation === "find") return output;
-      return `已编辑 PDF，保存至「${path.basename(dst)}」（${output}）`;
-    } finally {
-      await fs.promises.unlink(scriptPath).catch(() => {});
-    }
+    // 统一走 PyMuPDF 技能层（macOS 用 python3），缺解释器/库时返回安装引导
+    return await editPdfText(src, dst, operation, { query, anchor, text, color, fontsize, mode, replaceWith });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     return `PDF 编辑失败: ${msg}`;
@@ -1668,6 +1559,18 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
           args.mode ? String(args.mode) : undefined,
           args.replace_with ? String(args.replace_with) : undefined
         );
+      case "pdf_to_excel":
+        return isWindows()
+          ? await win.pdfToExcel(String(args.source), String(args.target))
+          : await pdfToExcelText(String(args.source), String(args.target));
+      case "read_excel":
+        return isWindows()
+          ? await win.readExcel(String(args.path), args.max_rows != null ? Number(args.max_rows) : 200)
+          : await readExcelText(String(args.path), args.max_rows != null ? Number(args.max_rows) : 200);
+      case "run_python":
+        return isWindows()
+          ? await win.runPython(String(args.code), Array.isArray(args.args) ? args.args.map(String) : [])
+          : await runPythonText(String(args.code), Array.isArray(args.args) ? args.args.map(String) : []);
       case "analyze_image": {
         const { analyzeImage } = await import("../vision");
         return await analyzeImage(String(args.path), args.question ? String(args.question) : undefined);

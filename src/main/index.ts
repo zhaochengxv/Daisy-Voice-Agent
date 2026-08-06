@@ -386,6 +386,7 @@ let voiceSilenceTimer: NodeJS.Timeout | null = null;
 let voiceStartSilenceTimer: NodeJS.Timeout | null = null;
 let earlyCommandTimer: NodeJS.Timeout | null = null;
 let asrResultConsumed = false;
+let voiceUseWhisper = false; // 连续对话模式当前 ASR 是否本地 whisper（决定安全网时长）
 const VOICE_SILENCE_MS = 3000;
 // 唤醒/持续对话 loop back 后等待用户开口的时间。真机实测：TTS 回复播完用户
 // 需要反应时间，旧 3s 常被静音超时切断（用户感知「对话老中断」），放宽到 8s。
@@ -642,7 +643,12 @@ function startVoiceListening(): void {
     asrSession = null;
   }
 
-  asrSession = new WhisperAsrSession();
+  // 唤醒后连续对话默认走火山 WebSocket ASR（约 0.7s 出结果，远快于本地 whisper-cli
+  // 常见 3s+），与快捷键路径保持一致；未配置火山或用户显式 SHORTCUT_USE_WHISPER=true
+  // 时回退本地 whisper（离线/隐私优先）。
+  voiceUseWhisper = config.whisper.shortcutUseWhisper || !isAsrConfigured();
+  log(`startVoiceListening: asr=${voiceUseWhisper ? "local-whisper" : "volcano-websocket"}`);
+  asrSession = voiceUseWhisper ? new WhisperAsrSession() : new AsrSession();
   asrSession.on("partial", (text) => {
     if (!voiceWakeMode) return;
     log(`Voice ASR partial: ${text}`);
@@ -759,17 +765,18 @@ function endVoiceListening(): void {
     }
   }, 500);
 
-  // Voice 模式固定用本地 whisper-cli（弱 CPU 首次推理可达数十秒），安全网放宽到 50s
+  // 火山 WebSocket 约 0.7s 出结果（12s 安全网）；本地 whisper-cli 弱 CPU 首次推理可达数十秒（50s）
+  const voiceSafetyNetMs = voiceUseWhisper ? 50000 : 12000;
   safetyNetTimer = setTimeout(() => {
     if (isSessionActive) {
-      log("Voice ASR final timeout (50s), forcing session reset");
+      log(`Voice ASR final timeout (${voiceSafetyNetMs}ms), forcing session reset`);
       isSessionActive = false;
       asrSession = null;
       updateState("idle");
       startAutoHideTimer();
     }
     safetyNetTimer = null;
-  }, 50000);
+  }, voiceSafetyNetMs);
 }
 
 function handleUserInput(text: string): void {

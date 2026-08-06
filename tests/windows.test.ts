@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -22,6 +22,15 @@ vi.mock("../src/main/utils/windowsShell", async (importOriginal) => {
   };
 });
 
+vi.mock("../src/main/utils/pythonRuntime", () => ({
+  findPython: vi.fn(async () => null),
+  hasPythonLibrary: vi.fn(async () => false),
+  runPythonCode: vi.fn(async () => ({ stdout: "", stderr: "" })),
+  resetPythonCache: () => {},
+  pythonMissingHint: (libs?: string[]) => `未检测到 Python 3${libs && libs.length ? `，需安装依赖：${libs.join(" ")}` : ""}`,
+  pythonLibMissingHint: (_exe: string, libs: string[]) => `检测到 Python 但缺少依赖库：${libs.join("、")}，请 pip install ${libs.join(" ")}`,
+}));
+
 import {
   escapeSendKeys,
   buildSendKeys,
@@ -34,8 +43,15 @@ import {
   runShellCommand,
   translateBashToPowerShell,
   inferShellTimeout,
+  convertDocument,
+  formatBytes,
+  editPdf,
+  pdfToExcel,
+  readExcel,
+  runPython,
 } from "../src/main/control/windows";
 import { isWindows, runPowerShell } from "../src/main/utils/windowsShell";
+import { findPython, hasPythonLibrary, runPythonCode } from "../src/main/utils/pythonRuntime";
 
 beforeEach(() => {
   vi.mocked(runPowerShell).mockClear();
@@ -362,6 +378,160 @@ describe("whisperNeedsNoGpu", () => {
       electronMockState.userDataDir = "/__daisy_no_gpu__";
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("convertDocument 落盘校验（杜绝假成功）", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "daisy-cvt-test-"));
+  const srcPdf = path.join(tmp, "source.pdf");
+  const srcTxt = path.join(tmp, "source.txt");
+  fs.writeFileSync(srcPdf, "%PDF-1.4 fake content");
+  fs.writeFileSync(srcTxt, "你好，Daisy 纯文本内容");
+
+  afterAll(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("纯文本 txt→md 直转：落盘确定，返回成功", async () => {
+    const dst = path.join(tmp, "out.md");
+    const r = await convertDocument(srcTxt, dst);
+    expect(r).toContain("已转换文档");
+    expect(fs.existsSync(dst)).toBe(true);
+    expect(r).toContain("out.md");
+  });
+
+  it("Word 路由 OUTPUT_OK 时如实返回成功（含产物大小）", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("OUTPUT_OK:2048");
+    const dst = path.join(tmp, "out.docx");
+    const r = await convertDocument(srcTxt, dst);
+    expect(r).toContain("已转换文档");
+    expect(r).toContain("2.0 KB");
+  });
+
+  it("Word 路由 OUTPUT_MISSING 时如实报失败，不虚报成功", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("OUTPUT_MISSING");
+    const dst = path.join(tmp, "out_missing.docx");
+    const r = await convertDocument(srcTxt, dst);
+    expect(r).not.toContain("已转换");
+    expect(r).toContain("转换失败");
+  });
+
+  it("Word 路由 OUTPUT_EMPTY 时如实报失败（产物为空）", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("OUTPUT_EMPTY");
+    const dst = path.join(tmp, "out_empty.docx");
+    const r = await convertDocument(srcTxt, dst);
+    expect(r).not.toContain("已转换");
+    expect(r).toContain("为空");
+  });
+
+  it("Word 返回 NO_WORD 时返回 Office 引导提示", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("NO_WORD");
+    const dst = path.join(tmp, "out_noword.docx");
+    const r = await convertDocument(srcTxt, dst);
+    expect(r).toContain("Outlook/Word");
+  });
+
+  it("PDF→txt：无 Python 且 Word 未落盘时，如实报失败并给出安装提示", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("OUTPUT_MISSING");
+    const dst = path.join(tmp, "out.pdf.txt");
+    const r = await convertDocument(srcPdf, dst);
+    expect(r).not.toContain("已转换");
+    expect(r).toContain("提取失败");
+    expect(r).toContain("Python");
+  });
+
+  it("PDF→txt：Python 提取为空时明确提示可能是扫描图片版", async () => {
+    // 模拟有 Python 但提取结果为空（execFileAsync 走 no_python → Word 兜底 → 空）
+    vi.mocked(runPowerShell).mockResolvedValueOnce("OUTPUT_EMPTY");
+    const dst = path.join(tmp, "scan.txt");
+    const r = await convertDocument(srcPdf, dst);
+    expect(r).not.toContain("已转换");
+    expect(r).toContain("扫描");
+  });
+
+  it("源文件不存在时给出明确提示", async () => {
+    const r = await convertDocument(path.join(tmp, "nope.pdf"), path.join(tmp, "nope.txt"));
+    expect(r).toContain("找不到源文件");
+  });
+
+  it("formatBytes 人类可读", () => {
+    expect(formatBytes(500)).toBe("500 B");
+    expect(formatBytes(2048)).toBe("2.0 KB");
+    expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+});
+
+describe("Python 技能工具（v1.5.17：edit_pdf 跨平台化 + pdf_to_excel/read_excel/run_python）", () => {
+  beforeEach(() => {
+    vi.mocked(findPython).mockReset();
+    vi.mocked(hasPythonLibrary).mockReset();
+    vi.mocked(runPythonCode).mockReset();
+    vi.mocked(findPython).mockResolvedValue(null);
+  });
+
+  it("edit_pdf：无 Python 时给出安装引导（不再仅支持 macOS）", async () => {
+    const r = await editPdf("a.pdf", "b.pdf", "find", "资产负债表");
+    expect(r).not.toContain("仅支持 macOS");
+    expect(r).toContain("Python");
+  });
+
+  it("edit_pdf：find 操作成功时返回坐标", async () => {
+    vi.mocked(findPython).mockResolvedValueOnce({ exe: "py", isWindows: true });
+    vi.mocked(hasPythonLibrary).mockResolvedValue(true);
+    vi.mocked(runPythonCode).mockResolvedValueOnce({ stdout: "找到 2 处\n页3 (100,200,300,400)", stderr: "" });
+    const r = await editPdf("a.pdf", "b.pdf", "find", "资产负债表");
+    expect(r).toContain("找到 2 处");
+    expect(r).toContain("页3");
+  });
+
+  it("edit_pdf：fill 操作成功时返回保存信息", async () => {
+    vi.mocked(findPython).mockResolvedValueOnce({ exe: "py", isWindows: true });
+    vi.mocked(hasPythonLibrary).mockResolvedValue(true);
+    vi.mocked(runPythonCode).mockResolvedValueOnce({ stdout: "已填入 1 处", stderr: "" });
+    const r = await editPdf("a.pdf", "b.pdf", "fill", undefined, "签名处", "张三");
+    expect(r).toContain("已编辑 PDF");
+    expect(r).toContain("b.pdf");
+  });
+
+  it("pdf_to_excel：成功时返回表格统计", async () => {
+    vi.mocked(findPython).mockResolvedValueOnce({ exe: "py", isWindows: true });
+    vi.mocked(hasPythonLibrary).mockResolvedValue(true);
+    vi.mocked(runPythonCode).mockResolvedValueOnce({ stdout: "OK:sheets=2 rows=45", stderr: "" });
+    const r = await pdfToExcel("report.pdf", "report.xlsx");
+    expect(r).toContain("2 个表格");
+    expect(r).toContain("45 行");
+  });
+
+  it("pdf_to_excel：无表格时如实提示", async () => {
+    vi.mocked(findPython).mockResolvedValueOnce({ exe: "py", isWindows: true });
+    vi.mocked(hasPythonLibrary).mockResolvedValue(true);
+    vi.mocked(runPythonCode).mockResolvedValueOnce({ stdout: "NO_TABLES", stderr: "" });
+    const r = await pdfToExcel("scan.pdf", "out.xlsx");
+    expect(r).toContain("未");
+  });
+
+  it("read_excel：返回结构化 JSON", async () => {
+    vi.mocked(findPython).mockResolvedValueOnce({ exe: "py", isWindows: true });
+    vi.mocked(hasPythonLibrary).mockResolvedValue(true);
+    vi.mocked(runPythonCode).mockResolvedValueOnce({
+      stdout: '[{"sheet": "收支表", "row_count": 3, "rows": [["项目", "金额"], ["收入", "100"]]}]',
+      stderr: "",
+    });
+    const r = await readExcel("t.xlsx", 10);
+    expect(r).toContain("收支表");
+    expect(r).toContain("100");
+  });
+
+  it("run_python：透传脚本输出", async () => {
+    vi.mocked(findPython).mockResolvedValueOnce({ exe: "py", isWindows: true });
+    vi.mocked(runPythonCode).mockResolvedValueOnce({ stdout: "[1, 2, 3]\n均值 2.0", stderr: "" });
+    const r = await runPython("print([1,2,3])");
+    expect(r).toContain("均值 2.0");
+  });
+
+  it("run_python：无 Python 时给出安装引导", async () => {
+    const r = await runPython("print(1)");
+    expect(r).toContain("Python");
   });
 });
 
