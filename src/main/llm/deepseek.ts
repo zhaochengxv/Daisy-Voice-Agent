@@ -34,6 +34,15 @@ const SILENT_ACTION_TOOLS = new Set([
   "edit_pdf",
   "scrape_url",
   "get_clipboard_text",
+  "mouse_move",
+  "mouse_click",
+  "mouse_scroll",
+  "get_mouse_position",
+  "capture_screen",
+  "get_window_list",
+  "get_active_window",
+  "list_skills",
+  "activate_skill",
 ]);
 
 export function getChatCompletionsUrl(baseUrl: string): string {
@@ -53,6 +62,12 @@ const INSPECTION_TOOLS = new Set([
   "convert_document",
   "scrape_url",
   "get_clipboard_text",
+  "get_mouse_position",
+  "get_window_list",
+  "get_active_window",
+  "list_skills",
+  "analyze_screen",
+  "capture_screen",
 ]);
 
 const MAX_CALLS_PER_TOOL = 8;
@@ -445,7 +460,7 @@ export class DeepSeekClient extends EventEmitter {
       let result: string;
       const signature = `${tc.function.name}:${tc.function.arguments.trim()}`;
       const currentCount = this.commandExecutionCounts.get(signature) || 0;
-      const isWhiteListed = ["capture_screen", "get_current_time"].includes(tc.function.name);
+      const isWhiteListed = ["capture_screen", "get_current_time", "analyze_screen", "get_window_list", "get_active_window", "get_mouse_position", "list_skills"].includes(tc.function.name);
 
       if (!isWhiteListed && currentCount >= LOOP_PREVENT_THRESHOLD) {
         log(`[LOOP_PREVENT] Command repeated too many times (count=${currentCount}): ${signature}. Intercepting.`);

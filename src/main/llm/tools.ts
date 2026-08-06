@@ -939,6 +939,140 @@ export const availableTools: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "capture_screen",
+      description: "截取当前屏幕为 PNG 图片并返回文件路径。用于查看用户当前正在看什么、GUI 自动化前获取界面快照。之后可用 analyze_image 或 analyze_screen 分析该截图。",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_screen",
+      description: "截取当前屏幕并调用视觉模型解读界面内容，返回元素类型/文字/坐标。GUI 自动化（点击按钮、填写表单、点击链接）的必经第一步：先分析屏幕拿到目标元素坐标，再 mouse_click 操作，最后再 analyze_screen 验证结果。",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "可选：针对屏幕内容的具体问题（如「这个页面有没有登录按钮？坐标在哪？」）" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mouse_move",
+      description: "移动鼠标光标到指定屏幕坐标 (x, y)。坐标原点为屏幕左上角。移动本身不产生点击，通常配合 mouse_click 使用。",
+      parameters: {
+        type: "object",
+        properties: {
+          x: { type: "number", description: "水平坐标（像素）" },
+          y: { type: "number", description: "垂直坐标（像素）" },
+        },
+        required: ["x", "y"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mouse_click",
+      description: "在指定屏幕坐标 (x, y) 处执行鼠标点击。支持左/右/中键与双击。GUI 自动化核心操作：配合 analyze_screen 拿到的坐标点击按钮/链接/输入框。",
+      parameters: {
+        type: "object",
+        properties: {
+          x: { type: "number", description: "水平坐标（像素）" },
+          y: { type: "number", description: "垂直坐标（像素）" },
+          button: { type: "string", enum: ["left", "right", "middle"], description: "按键，默认 left（可选）" },
+          double: { type: "boolean", description: "是否双击，默认 false（可选）" },
+        },
+        required: ["x", "y"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mouse_scroll",
+      description: "滚动鼠标滚轮。正数向上滚、负数向下滚，单位为格（1 格 ≈ 120）。用于浏览长页面/长列表时滚动到目标区域。",
+      parameters: {
+        type: "object",
+        properties: {
+          delta: { type: "integer", description: "滚动格数，正数向上、负数向下，如 3 或 -5" },
+        },
+        required: ["delta"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_mouse_position",
+      description: "获取当前鼠标光标的屏幕坐标 (x, y)。GUI 自动化时用于确认当前位置或校准坐标。",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_window_list",
+      description: "列出当前所有可见窗口（应用名、窗口标题、位置、大小）。用于了解用户打开了哪些窗口、定位目标应用窗口、窗口管理。",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_active_window",
+      description: "获取当前活动（最前）窗口的信息：应用名、窗口标题、位置、大小。用于了解用户当前正在使用什么应用、界面上下文感知。",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_skills",
+      description: "列出全部可用技能目录（含 id、名称、适用场景）。当用户请求属于某个专业技能领域（屏幕感知、GUI 自动化、窗口管理、PDF、Excel 分析、联网调研、文件管理、音视频、邮件、日程、图片视觉、备忘、系统操作）而你不确定用哪个时，先调用本工具检索。",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "activate_skill",
+      description: "激活指定技能，注入该技能的完整工作流指令（如何组合工具完成任务）。用户请求命中某技能场景时调用。常见技能 id：screen_awareness（屏幕感知）、gui_automation（图形界面自动化/操控电脑）、window_management、pdf_workflow、excel_analysis、web_research、file_management、media_processing、email_management、scheduling、image_vision、note_taking、system_operations。不确定时先 list_skills。",
+      parameters: {
+        type: "object",
+        properties: {
+          skill_id: { type: "string", description: "技能 id，例如 'gui_automation'" },
+        },
+        required: ["skill_id"],
+      },
+    },
+  },
 ];
 
 export interface ToolCall {

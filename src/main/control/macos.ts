@@ -1576,6 +1576,48 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
         const { analyzeVideo } = await import("../vision");
         return await analyzeVideo(String(args.path), args.question ? String(args.question) : undefined);
       }
+      case "capture_screen": {
+        const { captureScreenSafe } = await import("./screen");
+        return await captureScreenSafe();
+      }
+      case "analyze_screen": {
+        const { analyzeScreen } = await import("./screen");
+        return await analyzeScreen(args.question ? String(args.question) : undefined);
+      }
+      case "mouse_move": {
+        const { mouseMove } = await import("./screen");
+        return await mouseMove(Number(args.x), Number(args.y));
+      }
+      case "mouse_click": {
+        const { mouseClick } = await import("./screen");
+        return await mouseClick(Number(args.x), Number(args.y), args.button ? String(args.button) : "left", Boolean(args.double));
+      }
+      case "mouse_scroll": {
+        const { mouseScroll } = await import("./screen");
+        return await mouseScroll(Number(args.delta));
+      }
+      case "get_mouse_position": {
+        const { getMousePosition } = await import("./screen");
+        return await getMousePosition();
+      }
+      case "get_window_list": {
+        const { getWindowList } = await import("./screen");
+        return await getWindowList();
+      }
+      case "get_active_window": {
+        const { getActiveWindow } = await import("./screen");
+        return await getActiveWindow();
+      }
+      case "list_skills": {
+        const { listSkillsText } = await import("../skills/registry");
+        return listSkillsText();
+      }
+      case "activate_skill": {
+        const { activateSkillText } = await import("../skills/registry");
+        const skillId = String(args.skill_id ?? "");
+        const text = activateSkillText(skillId);
+        return text ?? `未找到技能「${skillId}」。可用的技能 id：screen_awareness, gui_automation, window_management, pdf_workflow, excel_analysis, web_research, file_management, media_processing, email_management, scheduling, image_vision, note_taking, system_operations`;
+      }
       case "send_email":
         return await sendEmail(
           String(args.to),

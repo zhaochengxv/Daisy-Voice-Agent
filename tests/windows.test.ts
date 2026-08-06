@@ -50,6 +50,13 @@ import {
   pdfToExcel,
   readExcel,
   runPython,
+  captureScreen,
+  mouseMove,
+  mouseClick,
+  mouseScroll,
+  getMousePosition,
+  getWindowList,
+  getActiveWindow,
 } from "../src/main/control/windows";
 import { isWindows, runPowerShell } from "../src/main/utils/windowsShell";
 import { findPython, hasPythonLibrary, runPythonCode } from "../src/main/utils/pythonRuntime";
@@ -587,6 +594,102 @@ describe("Python 技能工具（v1.5.17：edit_pdf 跨平台化 + pdf_to_excel/r
     expect(r).toContain("已阻止脚本");
     expect(r).toContain("run_shell_command");
     expect(vi.mocked(findPython)).not.toHaveBeenCalled();
+  });
+});
+
+describe("captureScreen（全场景感知）", () => {
+  it("runPowerShell 失败时抛出中文错误（不返回空文件路径）", async () => {
+    vi.mocked(runPowerShell).mockRejectedValueOnce(new Error("Add-Type failed"));
+    await expect(captureScreen()).rejects.toThrow(/截屏失败/);
+  });
+});
+
+describe("mouseMove / mouseClick / mouseScroll（全场景操控）", () => {
+  it("mouseMove：runPowerShell 正常时返回移动坐标", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const result = await mouseMove(100, 200);
+    expect(result).toContain("已移动鼠标到 (100, 200)");
+    const args = vi.mocked(runPowerShell).mock.calls[0][1];
+    expect(args?.args).toEqual(["100", "200"]);
+  });
+
+  it("mouseMove：runPowerShell 失败时返回失败信息（不抛出）", async () => {
+    vi.mocked(runPowerShell).mockRejectedValueOnce(new Error("SetCursorPos failed"));
+    const result = await mouseMove(10, 20);
+    expect(result).toContain("移动鼠标失败");
+  });
+
+  it("mouseClick：默认左键单击，坐标与次数经 DAISY_ARG 传入", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const result = await mouseClick(50, 60);
+    expect(result).toContain("已点击 (50, 60)");
+    const args = vi.mocked(runPowerShell).mock.calls[0][1];
+    expect(args?.args).toEqual(["50", "60", "left", "1"]);
+  });
+
+  it("mouseClick：右键双击时传 right 与次数 2", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const result = await mouseClick(1, 2, "right", true);
+    expect(result).toContain("双击");
+    expect(result).toContain("右键");
+    const args = vi.mocked(runPowerShell).mock.calls[0][1];
+    expect(args?.args).toEqual(["1", "2", "right", "2"]);
+  });
+
+  it("mouseScroll：正数向上、负数向下，delta 换算为 120 的倍数并夹紧", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const up = await mouseScroll(3);
+    expect(up).toContain("向上 3 格");
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const down = await mouseScroll(-1);
+    expect(down).toContain("向下 1 格");
+    // 超大 delta 被夹紧到 ±3000
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    await mouseScroll(9999);
+    const args = vi.mocked(runPowerShell).mock.calls[2][1];
+    expect(args?.args).toEqual(["3000"]);
+  });
+
+  it("getMousePosition：解析 PowerShell 输出的 x,y", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("800,600");
+    const result = await getMousePosition();
+    expect(result).toContain("(800, 600)");
+  });
+});
+
+describe("getWindowList / getActiveWindow（窗口感知）", () => {
+  it("getWindowList：解析 app|title|pos|size 多行输出", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("Code|myproject - main.ts|10,20|1400x900\nchrome|百度|0,0|1280x720");
+    const result = await getWindowList();
+    expect(result).toContain("当前可见窗口（2 个）");
+    expect(result).toContain('Code：「myproject - main.ts」 位置(10,20) 尺寸(1400x900)');
+    expect(result).toContain('chrome：「百度」 位置(0,0) 尺寸(1280x720)');
+  });
+
+  it("getWindowList：无输出时返回没有可见窗口", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("");
+    const result = await getWindowList();
+    expect(result).toContain("没有可见窗口");
+  });
+
+  it("getWindowList：runPowerShell 失败返回失败信息", async () => {
+    vi.mocked(runPowerShell).mockRejectedValueOnce(new Error("Get-Process failed"));
+    const result = await getWindowList();
+    expect(result).toContain("获取窗口列表失败");
+  });
+
+  it("getActiveWindow：解析单行输出", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("Code|main.ts|10,20|1400x900");
+    const result = await getActiveWindow();
+    expect(result).toContain("应用：Code");
+    expect(result).toContain("标题：main.ts");
+    expect(result).toContain("位置：10,20 尺寸：1400x900");
+  });
+
+  it("getActiveWindow：标题为空时显示（无标题）", async () => {
+    vi.mocked(runPowerShell).mockResolvedValueOnce("explorer||0,0|1920x1080");
+    const result = await getActiveWindow();
+    expect(result).toContain("（无标题）");
   });
 });
 

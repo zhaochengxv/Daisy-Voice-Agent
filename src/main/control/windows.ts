@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import os from "node:os";
-import { log } from "../utils/logger";
+import fs from "node:fs";
+import { log, logError } from "../utils/logger";
 import { runPowerShell } from "../utils/windowsShell";
 import {
   extractPdfTextViaPython,
@@ -1516,4 +1517,243 @@ export async function readExcel(source: string, maxRows = 200): Promise<string> 
 /** 通用 Python 脚本执行（Python 库技能包：pandas 数据分析、批处理等） */
 export async function runPython(code: string, args: string[] = []): Promise<string> {
   return await runPythonText(code, args);
+}
+
+// ── 全场景感知与控制（Windows 实现）──
+// 截屏用 System.Drawing CopyFromScreen；鼠标用 user32 SetCursorPos + mouse_event；
+// 窗口列表用 Get-Process + Win32 GetWindowRect（GetWindowThreadProcessId 兼容）。
+// 用户输入一律经 DAISY_ARGx 环境变量传入，杜绝拼接注入。
+
+/** 截取整个屏幕为 PNG，返回文件路径 */
+export async function captureScreen(): Promise<string> {
+  const out = path.join(os.tmpdir(), "daisy-screen", `screen-${Date.now()}.png`);
+  try {
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    const script = `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+$gfx = [System.Drawing.Graphics]::FromImage($bmp)
+$gfx.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bmp.Size)
+$bmp.Save($env:DAISY_ARG0, [System.Drawing.Imaging.ImageFormat]::Png)
+$gfx.Dispose()
+$bmp.Dispose()
+`;
+    await runPowerShell(script, { timeoutMs: 20000, args: [out] });
+    if (!fs.existsSync(out)) throw new Error("PowerShell 截图未生成文件");
+    log(`captureScreen (win): saved ${out}`);
+    return out;
+  } catch (error) {
+    logError("captureScreen (win) failed", error);
+    throw new Error(`截屏失败: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** 截屏 + 视觉模型分析屏幕内容（Windows） */
+export async function analyzeScreen(question?: string): Promise<string> {
+  const shot = await captureScreen();
+  const { analyzeImage, isVisionConfigured } = await import("../vision");
+  if (!isVisionConfigured()) {
+    return `已截屏保存到 ${shot}，但视觉模型未配置，无法解读屏幕内容。可在设置页「视觉理解」填入 API Key。截图路径：${shot}`;
+  }
+  const q = question?.trim()
+    ? `${question}\n\n请同时提取界面上的关键文字与元素类型（按钮/输入框/链接等），并给出它们的大致屏幕坐标，方便后续自动点击。`
+    : "请详细描述当前屏幕上的内容：这是什么应用/界面？有哪些关键元素（按钮、输入框、链接、文字）？请逐项列出元素类型、可见文字和大致的屏幕坐标 (x, y)，方便后续基于坐标自动操作。";
+  try {
+    const text = await analyzeImage(shot, q);
+    return `【当前屏幕分析】\n${text}\n\n截图文件：${shot}`;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return `截屏成功（${shot}），但视觉模型分析失败：${msg}`;
+  }
+}
+
+/** 把坐标从 user32 逻辑坐标转字符串，避免浮点误差 */
+function fmtCoord(v: number): number {
+  return Math.round(v);
+}
+
+export async function mouseMove(x: number, y: number): Promise<string> {
+  const rx = fmtCoord(x);
+  const ry = fmtCoord(y);
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class DaisyMouse {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+}
+"@
+[DaisyMouse]::SetCursorPos($env:DAISY_ARG0, $env:DAISY_ARG1) | Out-Null
+`;
+  try {
+    await runPowerShell(script, { timeoutMs: 8000, args: [String(rx), String(ry)] });
+    return `已移动鼠标到 (${rx}, ${ry})`;
+  } catch (error) {
+    return `移动鼠标失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+export async function mouseClick(x: number, y: number, button = "left", double = false): Promise<string> {
+  const rx = fmtCoord(x);
+  const ry = fmtCoord(y);
+  const repeats = double ? 2 : 1;
+  const downUp: Record<string, string> = {
+    left: "[DaisyMouse]::LEFTDOWN",
+    right: "[DaisyMouse]::RIGHTDOWN",
+    middle: "[DaisyMouse]::MIDDLEDOWN",
+  };
+  const realScript = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class DaisyMouse {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+  public const uint LEFTDOWN = 0x0002;
+  public const uint LEFTUP = 0x0004;
+  public const uint RIGHTDOWN = 0x0008;
+  public const uint RIGHTUP = 0x0010;
+  public const uint MIDDLEDOWN = 0x0020;
+  public const uint MIDDLEUP = 0x0040;
+}
+"@
+[DaisyMouse]::SetCursorPos($env:DAISY_ARG0, $env:DAISY_ARG1) | Out-Null
+Start-Sleep -Milliseconds 50
+$down = ${downUp[button] || downUp.left}
+$up = $down -replace 'DOWN', 'UP'
+for ($i = 0; $i -lt [int]$env:DAISY_ARG3; $i++) {
+  [DaisyMouse]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 60
+  [DaisyMouse]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 60
+}
+`;
+  try {
+    await runPowerShell(realScript, { timeoutMs: 10000, args: [String(rx), String(ry), button, String(repeats)] });
+    return `已${double ? "双击" : "点击"} (${rx}, ${ry})${button === "right" ? "（右键）" : ""}`;
+  } catch (error) {
+    return `点击失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+export async function mouseScroll(delta: number): Promise<string> {
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class DaisyMouse {
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+  public const uint WHEEL = 0x0800;
+}
+"@
+[DaisyMouse]::mouse_event([DaisyMouse]::WHEEL, 0, 0, [uint32]$env:DAISY_ARG0, [UIntPtr]::Zero)
+`;
+  try {
+    // 正数向上滚（120 为 1 格），负数向下滚
+    const wheel = Math.max(-3000, Math.min(3000, Math.round(delta) * 120));
+    await runPowerShell(script, { timeoutMs: 8000, args: [String(wheel)] });
+    return `已滚动 ${delta > 0 ? "向上" : "向下"} ${Math.abs(delta)} 格`;
+  } catch (error) {
+    return `滚动失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+export async function getMousePosition(): Promise<string> {
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class DaisyMouse {
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT lpPoint);
+}
+"@
+$p = New-Object DaisyMouse+POINT
+[DaisyMouse]::GetCursorPos([ref]$p) | Out-Null
+"$($p.X),$($p.Y)"
+`;
+  try {
+    const stdout = await runPowerShell(script, { timeoutMs: 8000 });
+    const [px, py] = stdout.split(",").map((n) => parseInt(n.trim(), 10));
+    return `当前鼠标位置: (${px}, ${py})`;
+  } catch (error) {
+    return `获取鼠标位置失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/** 列出所有可见窗口（应用进程、窗口标题、位置、大小） */
+export async function getWindowList(): Promise<string> {
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Collections.Generic;
+public class DaisyWin {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+}
+"@
+$results = @()
+Get-Process | Where-Object { $_.MainWindowTitle -ne "" } | ForEach-Object {
+  $proc = $_
+  $rect = New-Object DaisyWin+RECT
+  if ([DaisyWin]::IsWindowVisible($proc.MainWindowHandle)) {
+    [void][DaisyWin]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)
+    $w = $rect.Right - $rect.Left
+    $h = $rect.Bottom - $rect.Top
+    $results += "$($proc.ProcessName)|$($proc.MainWindowTitle)|$($rect.Left),$($rect.Top)|\${w}x\${h}"
+  }
+}
+$results -join [Environment]::NewLine
+`;
+  try {
+    const stdout = await runPowerShell(script, { timeoutMs: 15000 });
+    const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return "当前没有可见窗口。";
+    const formatted = lines
+      .map((line) => {
+        const [app, title, pos, size] = line.split("|");
+        return `- ${app}：「${title}」 位置(${pos}) 尺寸(${size})`;
+      })
+      .join("\n");
+    return `当前可见窗口（${lines.length} 个）：\n${formatted}`;
+  } catch (error) {
+    return `获取窗口列表失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/** 获取当前活动窗口信息（进程名、窗口标题、位置、大小） */
+export async function getActiveWindow(): Promise<string> {
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class DaisyWin {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+}
+"@
+$h = [DaisyWin]::GetForegroundWindow()
+$pid2 = 0
+[void][DaisyWin]::GetWindowThreadProcessId($h, [ref]$pid2)
+$proc = Get-Process -Id $pid2 -ErrorAction SilentlyContinue
+$title = $proc.MainWindowTitle
+$rect = New-Object DaisyWin+RECT
+[void][DaisyWin]::GetWindowRect($h, [ref]$rect)
+$w = $rect.Right - $rect.Left
+$h2 = $rect.Bottom - $rect.Top
+"$($proc.ProcessName)|$title|$($rect.Left),$($rect.Top)|\${w}x\${h2}"
+`;
+  try {
+    const stdout = await runPowerShell(script, { timeoutMs: 10000 });
+    const [app, title, pos, size] = stdout.split("|");
+    return `当前活动窗口：\n- 应用：${app}\n- 标题：${title || "（无标题）"}\n- 位置：${pos || "未知"} 尺寸：${size || "未知"}`;
+  } catch (error) {
+    return `获取活动窗口失败: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }

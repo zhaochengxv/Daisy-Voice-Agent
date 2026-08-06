@@ -41,9 +41,12 @@ describe("ConversationManager", () => {
       cm.addUserMessage(`M${i}` + "长".repeat(6000));
     }
     const msgs = cm.getMessages();
-    // 每条约 6000 tokens，预算 32000 → 稳定保留 system + 最新 6 条
-    expect(msgs.length).toBe(7);
-    expect(msgs[6].content.startsWith("M8")).toBe(true);
+    // 每条约 6000 tokens，预算 32000：必须裁掉最旧的，且最新消息 M8 必须保留。
+    // （系统提示词含技能目录/环境信息，长度随版本浮动，故只断言裁剪不变量而非精确条数）
+    expect(msgs[0].role).toBe("system");
+    expect(msgs.length).toBeLessThan(9);
+    expect(msgs[msgs.length - 1].content.startsWith("M8")).toBe(true);
+    expect(msgs[1].content.startsWith("M1")).toBe(false);
   });
 
   it("保留完整有效的工具调用组", () => {
