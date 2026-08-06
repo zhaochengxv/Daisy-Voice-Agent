@@ -137,7 +137,6 @@ let gaseousTime = 0;
 let globalRotationAngle = 0;
 let time = 0;
 let lastFrameTime = performance.now();
-let smoothedVolume = 0;
 
 // TTS audio analysis
 let audioCtx = null;
@@ -154,7 +153,15 @@ const orbContainer = document.getElementById("orbContainer");
 const asrTextEl = document.getElementById("asrText");
 const llmOutputEl = document.getElementById("llmOutput");
 const statusLabelEl = document.getElementById("statusLabel");
+const statusBadgeEl = document.getElementById("statusBadge");
 const orbHaloEl = document.getElementById("orbHalo");
+const capsuleEl = document.getElementById("capsule");
+
+// 状态切换冲击波（一次性的能量涟漪，渲染循环中衰减扩散）
+let pulses = [];
+// speaking 表面能量粒子（随高频音量闪烁漂移）
+let sparkles = [];
+let lastVisualState = null;
 
 function hexToRgb(hex) {
   const clean = hex.replace("#", "");
@@ -165,7 +172,7 @@ function hexToRgb(hex) {
   };
 }
 
-/** 状态切换：更新 CSS 变量让整颗胶囊跟随状态色呼吸 */
+/** 状态切换：更新 CSS 变量让整颗胶囊跟随状态色呼吸，并触发能量反馈 */
 function applyStateVisuals(state) {
   const palette = palettes[state] || palettes.idle;
   const rgb = hexToRgb(palette.main);
@@ -178,6 +185,18 @@ function applyStateVisuals(state) {
       `radial-gradient(circle, rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.35) 0%, transparent 65%)`;
   }
   if (statusLabelEl) statusLabelEl.textContent = palette.label;
+  if (capsuleEl) capsuleEl.classList.toggle("speaking", state === "speaking");
+
+  // 状态真正变化时：徽标弹入 + 球体能量冲击波（同一状态重复通知不重复触发）
+  if (lastVisualState !== state) {
+    if (statusBadgeEl) {
+      statusBadgeEl.classList.remove("pop");
+      void statusBadgeEl.offsetWidth; // 强制重排以重启动画
+      statusBadgeEl.classList.add("pop");
+    }
+    pulses.push({ age: 0, maxAge: 1.05, color: palette.main });
+    lastVisualState = state;
+  }
 }
 
 function resizeCanvas() {
@@ -403,22 +422,37 @@ function cleanupAudio() {
   if (audioSource) { try { audioSource.disconnect(); } catch {} audioSource = null; }
   if (analyser) { try { analyser.disconnect(); } catch {} analyser = null; }
   if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
-  smoothedVolume = 0;
+  sparkles = [];
 }
 
-function getAudioVolume() {
+/** 分频段音量分析：低频→球体呼吸缩放，中频→极光光丝振幅，高频→表面粒子闪烁 */
+function getAudioBands() {
   if (analyser) {
     const data = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteFrequencyData(data);
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) sum += data[i];
-    return sum / data.length / 255;
+    const n = data.length;
+    if (n === 0) return { low: 0, mid: 0, high: 0, overall: 0 };
+    const lc = Math.max(1, Math.floor(n * 0.15));
+    const mc = Math.max(1, Math.floor(n * 0.45));
+    let low = 0, mid = 0, high = 0;
+    for (let i = 0; i < n; i++) {
+      const v = data[i] / 255;
+      if (i < lc) low += v;
+      else if (i < mc) mid += v;
+      else high += v;
+    }
+    low /= lc;
+    mid /= mc;
+    high /= Math.max(1, n - mc);
+    return { low, mid, high, overall: (low + mid + high) / 3 };
   }
+  // 聆听中无真实音频流：用舒缓的正弦组合模拟呼吸感
   if (currentState === 'listening') {
-    return 0.12 * Math.sin(time * 0.2) * Math.cos(time * 0.1) +
-           0.07 * Math.sin(time * 0.5) + 0.13;
+    const sim = 0.12 * Math.sin(time * 0.2) * Math.cos(time * 0.1) +
+                0.07 * Math.sin(time * 0.5) + 0.13;
+    return { low: sim * 0.6, mid: sim * 0.85, high: sim * 0.45, overall: sim };
   }
-  return 0;
+  return { low: 0, mid: 0, high: 0, overall: 0 };
 }
 
 // ── 渲染主循环 ──
@@ -440,8 +474,7 @@ function render() {
     return; // 面板不可见且已完全淡出时，完全停止渲染循环，节省 CPU 资源
   }
 
-  const rawVolume = getAudioVolume();
-  smoothedVolume = lerp(smoothedVolume, rawVolume, 0.08);
+  const bands = getAudioBands();
 
   const now = performance.now();
   const rawDt = (now - lastFrameTime) / 1000;
@@ -459,8 +492,8 @@ function render() {
   time += dt * 60;
 
   let baseScale = 1.0;
-  if (currentState === 'speaking') baseScale += smoothedVolume * 0.11;
-  else if (currentState === 'listening') baseScale += smoothedVolume * 0.07;
+  if (currentState === 'speaking') baseScale += bands.low * 0.16;
+  else if (currentState === 'listening') baseScale += bands.low * 0.10;
   const breath = 1.0 + Math.sin(time * 0.4) * animPulse;
   orbScale = lerp(orbScale, baseScale * breath, 0.04);
   wakeScale = lerp(wakeScale, targetWakeScale, 0.04);
@@ -490,7 +523,7 @@ function render() {
   const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
   drawSphereBase(cx, cy, radius, currentState);
-  drawNeonFilaments(cx, cy, radius, smoothedVolume, currentState);
+  drawNeonFilaments(cx, cy, radius, bands.mid, currentState);
   drawOrbitRing(cx, cy, radius, currentState);
   drawRipples(cx, cy, radius, currentState);
   drawInnerShadow(cx, cy, radius, isDark);
@@ -500,6 +533,56 @@ function render() {
 
   drawGlassHighlights(cx, cy, radius, currentState, isDark);
   ctx.restore();
+
+  // 状态冲击波：能量涟漪从球心冲出球体（clip 外绘制，不被球面裁切）
+  for (let i = pulses.length - 1; i >= 0; i--) {
+    const p = pulses[i];
+    p.age += rawDt;
+    if (p.age >= p.maxAge) { pulses.splice(i, 1); continue; }
+    const prog = p.age / p.maxAge;
+    const pr = radius * (0.5 + prog * 1.35);
+    const pa = (1 - prog) * 0.5;
+    const prgb = hexToRgb(p.color);
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.beginPath();
+    ctx.arc(cx, cy, pr, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${prgb.r}, ${prgb.g}, ${prgb.b}, ${pa})`;
+    ctx.lineWidth = 2.4 * (1 - prog) + 0.6;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 说话中表面能量粒子：随高频音量在球面内闪烁漂移
+  if (currentState === "speaking") {
+    if (sparkles.length < 36 && Math.random() < 0.16 + bands.high * 0.5) {
+      sparkles.push({
+        a: Math.random() * Math.PI * 2,
+        d: radius * (0.28 + Math.random() * 0.5),
+        life: 0,
+        maxLife: 0.5 + Math.random() * 0.9,
+        size: 1 + Math.random() * 1.9,
+      });
+    }
+  }
+  for (let i = sparkles.length - 1; i >= 0; i--) {
+    const s = sparkles[i];
+    s.life += rawDt;
+    if (s.life >= s.maxLife) { sparkles.splice(i, 1); continue; }
+    const sp = s.life / s.maxLife;
+    const sa = (1 - sp) * (0.3 + bands.high * 0.7);
+    if (sa <= 0.01) continue;
+    const wobble = Math.sin(time * 0.28 + s.a * 3) * 2.4;
+    const sx = cx + Math.cos(s.a) * (s.d + wobble);
+    const sy = cy + Math.sin(s.a) * (s.d + wobble);
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = `rgba(226, 246, 255, ${sa})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, s.size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 
   if (isLoopRunning) {
     requestAnimationFrame(render);
@@ -737,18 +820,28 @@ function isPointInElement(x, y, el) {
 // - 已静音（muted）：点击任意位置重听被静音的最后回答（恢复播放）。
 // - 空闲/思考/错误：点击 orb → 切换录音（开/关一轮语音会话）；
 //   点击文本区 → 打开设置窗口。文本区承载 LLM 输出，避免与录音入口冲突。
+function spawnRipple() {
+  if (!orbContainer) return;
+  const el = document.createElement("div");
+  el.className = "ripple";
+  orbContainer.appendChild(el);
+  el.addEventListener("animationend", () => el.remove());
+}
 window.addEventListener("click", (e) => {
   if (dragMoved) return; // 拖动后不当作点击
   if (currentState === "speaking") {
+    spawnRipple();
     diriAPI.muteCurrentTts();
     return;
   }
   if (currentState === "muted") {
+    spawnRipple();
     diriAPI.replayCurrentTts();
     return;
   }
   const isOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
   if (isOrb) {
+    spawnRipple();
     if (currentState === "listening") {
       diriAPI.stopRecording();
     } else {
@@ -757,6 +850,16 @@ window.addEventListener("click", (e) => {
   } else {
     diriAPI.openSettings();
   }
+});
+
+// 按压反馈：鼠标按下 orb 时按压缩实（放大缩小阻尼），抬起恢复
+window.addEventListener("mousedown", (e) => {
+  if (isPointInElement(e.clientX, e.clientY, orbContainer)) {
+    orbContainer.classList.add("pressed");
+  }
+});
+window.addEventListener("mouseup", () => {
+  orbContainer.classList.remove("pressed");
 });
 
 // 初始状态色（避免首帧等待 IPC 事件才上色）

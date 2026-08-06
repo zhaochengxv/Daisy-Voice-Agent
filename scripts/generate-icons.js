@@ -175,123 +175,238 @@ function smoothStep(a, b, x) {
   return t * t * (3 - 2 * t);
 }
 
-function drawIcon(size) {
-  const cv = createCanvas(size);
-  const S = size;
-  const cx = S / 2, cy = S / 2;
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
 
-  // 徽章圆半径（外圆），留出边缘辉光空间
-  const R = S * 0.47;
-  const R_in = R - S * 0.012;
-
-  // 逐像素绘制主体
-  const star = [
-    [0.18, 0.24], [0.30, 0.14], [0.76, 0.20], [0.84, 0.42],
-    [0.72, 0.68], [0.26, 0.78], [0.14, 0.52], [0.46, 0.12],
-    [0.88, 0.70], [0.55, 0.86],
-  ];
-
-  for (let py = 0; py < S; py++) {
-    for (let px = 0; px < S; px++) {
-      const dx = px - cx, dy = py - cy;
-      const dist = Math.hypot(dx, dy);
-
-      // —— 徽章：深空径向渐变圆 + 辉光描边 ——
-      const disk = smoothStep(R_in - 1, R_in + 1, R - dist);
-      if (disk <= 0) {
-        // 外圈辉光（淡青紫，仅在近边缘）
-        const glow = Math.max(0, 1 - (dist - R) / (S * 0.05)) * 0.35;
-        if (glow > 0.01) cv.set(px, py, 124, 176, 255, Math.round(glow * 255));
-        continue;
-      }
-      const t = dist / R; // 0 中心 → 1 边缘
-      // 底：中心深蓝紫 → 边缘近黑蓝
-      const bgR = 24 + 6 * t, bgG = 18 + 2 * t, bgB = 46 + 4 * t;
-      cv.set(px, py, bgR, bgG, bgB, Math.round(disk * 255));
-
-      // —— 极光光球 ——
-      const br = R * 0.52;
-      const bd = Math.hypot(dx, dy) / br;
-      if (bd < 1.25) {
-        const core = Math.max(0, 1 - bd); // 球体不透明度
-        // 径向渐变：白核心 → 青 → 紫
-        const g = smoothStep(0.0, 1.15, bd);
-        const cr = 233 + (124 - 233) * g;
-        const cg = 244 + (210 - 244) * g;
-        const cb = 255 + (250 - 255) * g;
-        cv.set(px, py, cr, cg, cb, Math.round(core * 255));
-      }
-
-      // —— 斜行星环（神秘科技感）：椭圆环穿过球体 ——
-      // 椭圆长轴水平倾斜 -18°，中心略偏右上
-      const rx = R * 0.92, ry = R * 0.34;
-      const ang = -Math.PI / 10;
-      const cosA = Math.cos(ang), sinA = Math.sin(ang);
-      const ox = cx + R * 0.10, oy = cy - R * 0.14;
-      const ex = (px - ox), ey = (py - oy);
-      const rrx = ex * cosA + ey * sinA;
-      const rry = -ex * sinA + ey * cosA;
-      const ringD = Math.hypot(rrx / rx, rry / ry);
-      const ringW = R * 0.016;
-      if (Math.abs(ringD - 1) < ringW) {
-        const a = smoothStep(ringW, ringW * 0.4, Math.abs(ringD - 1)) * 0.85;
-        // 环颜色：青→紫渐变（依环上位置）
-        const huePhase = (rrx / rx + 1) / 2;
-        const r2 = 129 + (167 - 129) * huePhase;
-        const g2 = 235 + (139 - 235) * huePhase;
-        const b2 = 254 + (250 - 254) * huePhase;
-        cv.set(px, py, r2, g2, b2, Math.round(a * 255));
-      }
-
-      // —— 音波弧：从球边缘向外扩散的三条弧（语音） ——
-      const arcAlpha = [0.55, 0.4, 0.28];
-      const arcR0 = [0.62, 0.74, 0.86]; // 相对 R
-      const arcWidth = [0.045, 0.05, 0.055];
-      for (let i = 0; i < 3; i++) {
-        const r0 = R * arcR0[i];
-        const w0 = R * arcWidth[i];
-        if (Math.abs(dist - r0) < w0) {
-          const theta = Math.atan2(dy, dx);
-          // 开口朝左下 130°，左右各 70°
-          const openAt = Math.PI * 0.75;
-          const spread = Math.PI * 0.42;
-          const dTheta = Math.abs(normalizeAngle(theta - openAt));
-          if (dTheta < spread) {
-            const edge = smoothStep(spread, spread * 0.55, dTheta);
-            const a = arcAlpha[i] * edge * smoothStep(w0, w0 * 0.35, Math.abs(dist - r0));
-            cv.set(px, py, 125, 225, 255, Math.round(a * 255));
-          }
-        }
-      }
-
-      // —— 星点 ——
-      for (const [sx, sy] of star) {
-        const sdx = px - sx * S, sdy = py - sy * S;
-        const sd = Math.hypot(sdx, sdy);
-        const sr = S * 0.0065;
-        if (sd < sr * 1.6) {
-          const a = smoothStep(sr * 1.6, sr * 0.3, sd) * 0.9;
-          cv.set(px, py, 235, 245, 255, Math.round(a * 255));
-        }
-      }
-
-      // —— 球体左上高光 ——
-      const hlx = cx - br * 0.38, hly = cy - br * 0.42;
-      const hd = Math.hypot(px - hlx, py - hly) / (br * 0.55);
-      if (hd < 1) {
-        const a = smoothStep(1, 0, hd) * 0.85;
-        cv.set(px, py, 255, 255, 255, Math.round(a * 255));
-      }
-    }
-  }
-
-  return cv.buf;
+/** 确定性随机（mulberry32），保证每次构建图标一致 */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function normalizeAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a < -Math.PI) a += 2 * Math.PI;
   return a;
+}
+
+/**
+ * 液态玻璃极光水晶球（v2 高逼格版）：
+ *   深邃太空圆徽 + 3D 光照水晶球 + 内部封印极光（青/紫/粉）+ 玻璃菲涅尔壳
+ *   + 真实穿越球体的斜行星环（前方覆盖/后方被遮）+ 声波弧 + 弥散星光
+ */
+function drawIcon(size) {
+  const cv = createCanvas(size);
+  const S = size;
+  const cx = S / 2, cy = S / 2;
+
+  // 徽章圆半径，球体略偏上给行星环留视觉重心
+  const R = S * 0.47;
+  const bcx = cx;
+  const bcy = cy - R * 0.015;
+  const br = R * 0.55;
+
+  // 预生成星点（位置/大小/亮度确定性随机）
+  const rand = mulberry32(20260806);
+  const stars = [];
+  for (let i = 0; i < 34; i++) {
+    const a = rand() * Math.PI * 2;
+    const rr = R * (0.12 + rand() * 0.8);
+    stars.push({
+      x: cx + Math.cos(a) * rr,
+      y: cy + Math.sin(a) * rr * 0.96,
+      r: S * (0.0018 + rand() * 0.0036),
+      a: 0.28 + rand() * 0.5,
+      big: rand() > 0.8,
+    });
+  }
+
+  // 内部极光色斑（相对球心偏移 / 半径比例 / RGB）
+  const blobs = [
+    { dx: -0.26, dy: -0.10, r: 0.58, cr: 64, cg: 238, cb: 255 },  // 青
+    { dx: 0.24, dy: 0.22, r: 0.66, cr: 145, cg: 92, cb: 246 },     // 紫
+    { dx: 0.04, dy: -0.42, r: 0.42, cr: 246, cg: 118, cb: 182 },   // 粉
+  ];
+
+  // 斜行星环（真实 3D 穿越：环下方朝观察者覆盖球体，环上方被球遮）
+  const ox = cx + R * 0.04;
+  const oy = cy - R * 0.02;
+  const ringRx = R * 0.90, ringRy = R * 0.265;
+  const ringAng = -0.30;
+  const cosA = Math.cos(ringAng), sinA = Math.sin(ringAng);
+  const ringW = R * 0.014;
+
+  // 音波弧
+  const arcR0 = [1.20, 1.36, 1.54]; // 相对 br
+  const arcAlpha = [0.55, 0.42, 0.30];
+  const arcWidth = [0.020, 0.024, 0.028]; // 相对 br
+
+  for (let py = 0; py < S; py++) {
+    for (let px = 0; px < S; px++) {
+      const dx = px - cx, dy = py - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      // —— 0. 外圈环境辉光（青紫，仅近边缘，先画可被徽章底覆盖） ——
+      if (dist > R) {
+        const g = Math.max(0, 1 - (dist - R) / (R * 0.16));
+        const ga = g * g * 0.42;
+        if (ga > 0.015) cv.set(px, py, 96, 182, 255, Math.round(ga * 255));
+        continue;
+      }
+
+      const t = dist / R; // 0 中心 → 1 边缘
+
+      // —— 1. 徽章深空底：中心紫蓝 → 边缘近黑 ——
+      let r = lerp(46, 16, t), g = lerp(36, 10, t), b = lerp(96, 30, t);
+      // 内缘微光：徽章边缘一圈青紫描边
+      const rimD = R - dist;
+      if (rimD < S * 0.016) {
+        const ra = smoothStep(0, S * 0.016, rimD) * 0.5;
+        r = lerp(r, 118, ra); g = lerp(g, 186, ra); b = lerp(b, 255, ra);
+      }
+
+      // —— 2. 弥散星光（在球体后，中心区会被球盖住） ——
+      for (let si = 0; si < stars.length; si++) {
+        const st = stars[si];
+        const sdx = px - st.x, sdy = py - st.y;
+        const sd2 = sdx * sdx + sdy * sdy;
+        const rr2 = st.r * 2.2;
+        if (sd2 < rr2 * rr2) {
+          const sd = Math.sqrt(sd2);
+          const sa = smoothStep(st.r * 2.2, st.r * 0.4, sd) * st.a;
+          const br2 = st.big ? 0.95 : 0.72;
+          r = lerp(r, 250 * br2, sa); g = lerp(g, 252 * br2, sa); b = lerp(b, 255 * br2, sa);
+        }
+      }
+
+      // 徽章底落盘（后续球/环/弧半透明叠加）
+      cv.set(px, py, Math.round(r), Math.round(g), Math.round(b), 255);
+
+      // —— 3. 液态玻璃水晶球 ——
+      const bdx = px - bcx, bdy = py - bcy;
+      const bdist = Math.sqrt(bdx * bdx + bdy * bdy);
+      const bd = bdist / br;
+
+      if (bd < 1.06) {
+        const nx = bdist > 0.0001 ? bdx / bdist : 0;
+        const ny = bdist > 0.0001 ? bdy / bdist : 0;
+        // 3D 漫反射：主光源位于左上（-0.55, -0.83）
+        const diff = Math.max(0, nx * -0.55 + ny * -0.83);
+        const diffS = diff * diff;
+        let cr = lerp(88, 222, diffS);      // 紫蓝 → 亮青
+        let cg = lerp(84, 248, diffS);
+        let cb = lerp(190, 255, diffS);
+
+        // 内部封印极光色斑
+        for (let bi = 0; bi < blobs.length; bi++) {
+          const bl = blobs[bi];
+          const bldx = (px - (bcx + bl.dx * br)) / (br * bl.r);
+          const bldy = (py - (bcy + bl.dy * br)) / (br * bl.r);
+          const bld2 = bldx * bldx + bldy * bldy;
+          if (bld2 < 1.8) {
+            const ba = smoothStep(1.34, 0, Math.sqrt(bld2)) * 0.52;
+            cr = lerp(cr, bl.cr, ba); cg = lerp(cg, bl.cg, ba); cb = lerp(cb, bl.cb, ba);
+          }
+        }
+
+        // 玻璃壳：边缘菲涅尔亮边（bd→1 时最亮），制造立体玻璃感
+        const fres = bd * bd * bd * bd;
+        cr = lerp(cr, 214, fres * 0.9);
+        cg = lerp(cg, 246, fres * 0.9);
+        cb = lerp(cb, 255, fres * 0.9);
+
+        // 玻璃盖顶部弧光：球内偏上的一条椭圆亮带（模拟壳面反光）
+        const arcx = (px - (bcx - br * 0.10)) / (br * 0.78);
+        const arcy = (py - (bcy - br * 0.10)) / (br * 0.66);
+        const arcD = Math.sqrt(arcx * arcx + arcy * arcy);
+        if (arcD > 0.82 && arcD < 1.02) {
+          const w = smoothStep(0.82, 0.86, arcD) * smoothStep(1.02, 0.96, arcD);
+          const topHalf = ny < -0.05;
+          if (topHalf) {
+            cr = lerp(cr, 255, w * 0.55); cg = lerp(cg, 255, w * 0.55); cb = lerp(cb, 255, w * 0.55);
+          }
+        }
+
+        // 底部次表面透光：球下缘内侧一圈淡蓝（光从底部反弹）
+        if (ny > 0.25 && bd > 0.55) {
+          const sss = smoothStep(0.55, 1.0, bd) * Math.max(0, ny);
+          cr = lerp(cr, 150, sss * 0.4); cg = lerp(cg, 210, sss * 0.4); cb = lerp(cb, 255, sss * 0.4);
+        }
+
+        // 球体边缘羽化（bd 0.96~1.06 过渡），中心不透明
+        const ballA = smoothStep(1.06, 0.98, bd);
+        cv.set(px, py, Math.round(cr), Math.round(cg), Math.round(cb), Math.round(ballA * 255));
+      }
+
+      // —— 4. 斜行星环（真实穿越） ——
+      const ex = px - ox, ey = py - oy;
+      const rrx = ex * cosA + ey * sinA;
+      const rry = -ex * sinA + ey * cosA;
+      const rD = Math.sqrt((rrx * rrx) / (ringRx * ringRx) + (rry * rry) / (ringRy * ringRy));
+      if (Math.abs(rD - 1) < ringW * 3.2) {
+        const inFront = rry >= 0;                    // 环下方朝观察者
+        const hiddenByBall = !inFront && bd < 0.98;  // 环后方且处于球内 → 被球遮
+        if (!hiddenByBall) {
+          const core = smoothStep(ringW * 3.2, ringW * 0.5, Math.abs(rD - 1));
+          // 环色沿椭圆周 青→紫→青 循环渐变
+          const phase = ((rrx / ringRx) + 1) / 2;
+          let cr2, cg2, cb2;
+          if (phase < 0.5) {
+            const p = phase * 2;
+            cr2 = lerp(96, 196, p); cg2 = lerp(238, 118, p); cb2 = lerp(255, 246, p);
+          } else {
+            const p = (phase - 0.5) * 2;
+            cr2 = lerp(196, 96, p); cg2 = lerp(118, 238, p); cb2 = lerp(246, 255, p);
+          }
+          const a2 = core * (inFront ? 0.92 : 0.6);
+          cv.set(px, py, Math.round(cr2), Math.round(cg2), Math.round(cb2), Math.round(a2 * 255));
+        }
+        // 环外光晕（柔和扩散）
+        if (Math.abs(rD - 1) > ringW * 0.5) {
+          const haloA = Math.max(0, 1 - Math.abs(rD - 1) / (ringW * 3.2)) * 0.14;
+          if (haloA > 0.01) cv.set(px, py, 120, 220, 255, Math.round(haloA * 255));
+        }
+      }
+
+      // —— 5. 声波弧：球右侧三条细弧（语音意象） ——
+      const th = Math.atan2(dy, dx);
+      for (let i = 0; i < 3; i++) {
+        const r0 = br * arcR0[i];
+        const w0 = br * arcWidth[i];
+        if (Math.abs(dist - r0) < w0 * 2) {
+          const spread = Math.PI * 0.40;
+          const dTh = Math.abs(normalizeAngle(th));
+          if (dTh < spread) {
+            const edge = smoothStep(spread, spread * 0.55, dTh);
+            const a3 = arcAlpha[i] * edge * smoothStep(w0 * 2, w0 * 0.45, Math.abs(dist - r0));
+            if (a3 > 0.01) cv.set(px, py, 150, 242, 255, Math.round(a3 * 255));
+          }
+        }
+      }
+
+      // —— 6. 主镜面高光（球体左上小圆斑，玻璃真实感的点睛） ——
+      const hlx = bcx - br * 0.40, hly = bcy - br * 0.42;
+      const hdx = px - hlx, hdy = py - hly;
+      const hd = Math.sqrt(hdx * hdx + hdy * hdy) / (br * 0.24);
+      if (hd < 1.35 && bd < 1.05) {
+        const ha = smoothStep(1.35, 0, hd);
+        const halo = ha * 0.35;
+        const core = ha * ha * 0.85;
+        if (bd < 1) {
+          if (core > 0.02) cv.set(px, py, 255, 255, 255, Math.min(255, Math.round(core * 255)));
+          if (halo > 0.03 && ha > 0.55) cv.set(px, py, 235, 248, 255, Math.round(halo * 255));
+        }
+      }
+    }
+  }
+
+  return cv.buf;
 }
 
 /* ---------------------------- 主流程 ---------------------------- */

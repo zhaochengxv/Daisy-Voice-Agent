@@ -447,9 +447,11 @@ export default function App() {
       <div className={`w-full h-screen relative z-10 grid grid-cols-[240px_1fr] gap-6 px-6 pb-6 ${TOP_PADDING_CLASS}`}>
         {/* Sidebar */}
         <aside className="liquid-glass flex flex-col h-full rounded-[28px] overflow-hidden p-5">
-          <div className="flex items-center gap-[18px] pb-5 mb-5 border-b border-white/50 relative">
-            <IdleOrb />
-            <div>
+          <div className="flex items-center gap-[18px] pb-5 mb-5 border-b border-white/50 relative group">
+            <div className="transition-transform duration-500 ease-out group-hover:scale-110 group-hover:-rotate-6">
+              <IdleOrb />
+            </div>
+            <div className="transition-transform duration-500 ease-out group-hover:translate-x-1">
               <h1 className="font-display font-bold text-[21px] tracking-wide text-slate-800">Daisy</h1>
               <p className="text-[11px] font-medium text-slate-400 mt-0.5">智能助理</p>
             </div>

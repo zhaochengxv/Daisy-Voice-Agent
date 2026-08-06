@@ -67,6 +67,35 @@
         radial-gradient(70% 100% at 18% 0%, rgba(255,255,255,0.10) 0%, transparent 60%),
         linear-gradient(to bottom, rgba(255,255,255,0.06) 0%, transparent 100%);
       pointer-events: none;
+      z-index: 4;
+    }
+
+    /* ── 胶囊流光：一道斜向光泽缓慢扫过玻璃表面（高级质感） ── */
+    @keyframes capsuleSheen {
+      0%   { transform: translateX(-130%) skewX(-16deg); }
+      55%  { transform: translateX(260%) skewX(-16deg); }
+      100% { transform: translateX(260%) skewX(-16deg); }
+    }
+    #sheen {
+      position: absolute;
+      top: 0; bottom: 0; left: 0; right: 0;
+      border-radius: 22px;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 5;
+    }
+    #sheen::before {
+      content: "";
+      position: absolute;
+      top: -24%; bottom: -24%;
+      width: 40%;
+      left: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05) 42%, rgba(255,255,255,0.12) 50%, rgba(255,255,255,0.05) 58%, transparent);
+      animation: capsuleSheen 9s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    /* 说话中流光加快，强化"能量流动"感知 */
+    #capsule.speaking #sheen::before {
+      animation-duration: 4.5s;
     }
 
     /* ── 左侧 orb ── */
@@ -76,12 +105,21 @@
       position: relative;
       z-index: 2;
       cursor: pointer;
+      transition: transform 240ms cubic-bezier(0.34, 1.56, 0.64, 1);
     }
+    /* 悬停微浮起 + 光环放大（macOS 穿透 forward 亦转发 mousemove，两平台均生效） */
+    #orbContainer:hover { transform: scale(1.05); }
+    /* 按下按压缩实感 */
+    #orbContainer.pressed { transform: scale(0.93); transition: transform 90ms ease; }
     #orbCanvas {
       width: 100%; height: 100%;
       display: block;
     }
     /* orb 呼吸光环 */
+    @keyframes haloBreathe {
+      0%, 100% { transform: scale(1); opacity: 0.6; }
+      50%      { transform: scale(1.08); opacity: 0.85; }
+    }
     #orbHalo {
       position: absolute;
       inset: -14px;
@@ -91,6 +129,24 @@
       pointer-events: none;
       transition: background 500ms cubic-bezier(0.16, 1, 0.3, 1);
       z-index: 1;
+      animation: haloBreathe 3.2s ease-in-out infinite;
+    }
+    #orbContainer:hover #orbHalo { opacity: 1; transform: scale(1.12); }
+
+    /* 点击波纹（mousedown 在 orb 上扩散的水波） */
+    @keyframes orbRipple {
+      0%   { transform: translate(-50%, -50%) scale(0.2); opacity: 0.55; }
+      100% { transform: translate(-50%, -50%) scale(2.4); opacity: 0; }
+    }
+    .ripple {
+      position: absolute;
+      width: 92px; height: 92px;
+      left: 0; top: 0;
+      border-radius: 50%;
+      border: 2px solid rgba(var(--accent-rgb), 0.9);
+      pointer-events: none;
+      z-index: 3;
+      animation: orbRipple 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
 
     /* ── 中区：状态徽标 + ASR 实时文本 ── */
@@ -105,6 +161,15 @@
       z-index: 2;
     }
 
+    @keyframes badgePop {
+      0%   { transform: scale(0.82); opacity: 0.4; }
+      60%  { transform: scale(1.07); }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    @keyframes dotPulse {
+      0%, 100% { box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.9); }
+      50%      { box-shadow: 0 0 14px rgba(var(--accent-rgb), 1), 0 0 26px rgba(var(--accent-rgb), 0.55); }
+    }
     #statusBadge {
       display: inline-flex;
       align-items: center;
@@ -119,13 +184,16 @@
       background: rgba(255, 255, 255, 0.07);
       border: 1px solid rgba(255, 255, 255, 0.12);
       box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+      transform-origin: left center;
     }
+    /* 状态切换时由 JS 重触发 pop 弹入动画 */
+    #statusBadge.pop { animation: badgePop 360ms cubic-bezier(0.34, 1.56, 0.64, 1); }
     #statusBadge .dot {
       width: 7px; height: 7px;
       border-radius: 50%;
       background: rgb(var(--accent-rgb));
-      box-shadow: 0 0 7px rgba(var(--accent-rgb), 0.9);
-      transition: background 500ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 500ms cubic-bezier(0.16, 1, 0.3, 1);
+      animation: dotPulse 2s ease-in-out infinite;
+      transition: background 500ms cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     #asrText {
@@ -188,6 +256,7 @@
       <div id="asrText" class="hidden"></div>
     </div>
     <div id="llmOutput" class="hidden"></div>
+    <div id="sheen"></div>
   </div>
   <script src="float.js"></script>
 </body>
