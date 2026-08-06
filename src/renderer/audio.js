@@ -23,7 +23,10 @@ let shuttingDown = false;
 let inputDeviceId = "";
 let lastNonZeroLevelAt = 0;
 let rebuildCooldownUntil = 0;
-const SILENCE_REBUILD_MS = 4000;
+// 录音期间数字静音重建阈值。用户唤醒后常有 2-4s 停顿思考（真机日志 13:43 空转录根因：
+// 4s 静音即重建麦克风管线，重建期讲话全丢 → ASR 空转录）。放宽到 12s 覆盖正常停顿；
+// 且每个录音会话最多重建一次，避免重建后仍静音时循环重建毁掉整个录音。
+const SILENCE_REBUILD_MS = 12000;
 const REBUILD_COOLDOWN_MS = 10000;
 
 function logToMain(msg) {

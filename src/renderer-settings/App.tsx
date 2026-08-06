@@ -85,6 +85,13 @@ function rateFromStr(s: string): number {
   const n = parseInt(s, 10);
   return isNaN(n) ? 20 : Math.max(-50, Math.min(50, n));
 }
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const v = bytes / Math.pow(1024, i);
+  return (i >= 2 ? v.toFixed(1) : Math.round(v)) + " " + units[i];
+}
 
 export default function App() {
   const [settings, setSettings] = useState<SettingsState>(DEFAULT_SETTINGS);
@@ -125,6 +132,9 @@ export default function App() {
     downloading: boolean;
   }>({ platform: "", nvidia: "none", deployed: false, downloading: false });
   const [gpuProgress, setGpuProgress] = useState<number>(0);
+  const [gpuReceived, setGpuReceived] = useState<number>(0);
+  const [gpuTotal, setGpuTotal] = useState<number>(0);
+  const [gpuSpeed, setGpuSpeed] = useState<number>(0);
   const [gpuPhase, setGpuPhase] = useState<"download" | "extract" | "">("");
   const isFirecrawlActive = settings.FIRECRAWL_API_KEY.trim().length > 0;
 
@@ -270,6 +280,9 @@ export default function App() {
     const off = window.diriAPI.onWhisperGpuProgress((p) => {
       setGpuPhase(p.phase);
       setGpuProgress(p.percent);
+      setGpuReceived(p.received || 0);
+      setGpuTotal(p.total || 0);
+      setGpuSpeed(p.speed || 0);
       if (p.percent >= 100 && p.phase === "extract") {
         showTemporaryStatus("✓ GPU 组件部署完成，重启 Daisy 后生效", "success");
         setTimeout(() => refreshWhisperGpuStatus(), 500);
@@ -281,6 +294,9 @@ export default function App() {
   const handleDeployGpu = async () => {
     setGpuPhase("download");
     setGpuProgress(0);
+    setGpuReceived(0);
+    setGpuTotal(0);
+    setGpuSpeed(0);
     setWhisperGpuStatus((prev) => ({ ...prev, downloading: true }));
     try {
       const res = await window.diriAPI.downloadWhisperGpu();
@@ -292,6 +308,9 @@ export default function App() {
     } finally {
       setGpuPhase("");
       setGpuProgress(0);
+      setGpuReceived(0);
+      setGpuTotal(0);
+      setGpuSpeed(0);
       refreshWhisperGpuStatus();
     }
   };
@@ -847,7 +866,11 @@ export default function App() {
                               <div className="h-full bg-sky-500 transition-all" style={{ width: `${gpuProgress}%` }} />
                             </div>
                             <span className="text-[11px] text-sky-600 whitespace-nowrap">
-                              {gpuPhase === "extract" ? "解压中" : "下载中"} {gpuProgress}%
+                              {gpuPhase === "extract"
+                                ? "解压中"
+                                : gpuTotal > 0
+                                  ? `下载中 ${gpuProgress}% · ${formatBytes(gpuReceived)}/${formatBytes(gpuTotal)}${gpuSpeed > 0 ? ` · ${formatBytes(gpuSpeed)}/s` : ""}`
+                                  : "正在连接下载源…"}
                             </span>
                           </div>
                         ) : whisperGpuStatus.nvidia === "driver-ok" && !whisperGpuStatus.deployed ? (

@@ -133,6 +133,56 @@ let targetWakeScale = 1.0;
 let wakeShrinkTimer = null;
 let slideOffset = -100;
 
+// 交互缩放（canvas 内实现，避免 Windows 透明窗口 CSS transform 放大累积）：
+// uiHoverScale 悬停放大、uiPressScale 按下缩小、modeScale 迷你形态放大。
+let uiHoverScale = 1.0;
+let uiPressScale = 1.0;
+let isPointerDownOnOrb = false;
+// 悬停能量注入：hover 时核心更亮、轨道粒子加速（微交互质感）
+let hoverEnergy = 0.0;
+
+// 状态切换能量裂纹（神秘符文感：状态变化时核心辐射亮纹后隐去；error 态持续显现）
+let fracture = null;
+
+// 球内微观尘埃微粒（深空感：低速漂移 + 微弱闪烁，speaking 随音量加速）
+let dust = [];
+let dustInited = false;
+
+// ── 3D 立体渲染状态（软渲染/数学投影）──
+// 球面点云绕轴自转 + 鼠标视差倾斜 + 透视近大远小，呈现真实 3D 立体感。
+// 刻意不引入 WebGL/three.js：Windows 透明窗口对 GPU 合成有已知黑屏风险，
+// 纯 canvas 2D 投影无兼容隐患，且与现有玻璃质感层无缝融合。
+let spherePoints = [];
+let sphereRotY = 0;
+let tiltX = 0;      // 鼠标视差倾斜（上下轴）
+let tiltY = 0;      // 鼠标视差倾斜（左右轴）
+let spinBoost = 0;  // 点击自转脉冲
+let lastPointerU = 0.5; // 指针在 orb 内的归一化坐标（0-1）
+let lastPointerV = 0.5;
+
+function buildSpherePoints(n) {
+  const pts = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / (n - 1)) * 2;
+    const rad = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = golden * i;
+    pts.push({ x: Math.cos(theta) * rad, y, z: Math.sin(theta) * rad });
+  }
+  return pts;
+}
+spherePoints = buildSpherePoints(360);
+
+function rotateYX(x, y, z, ry, rx) {
+  const cosY = Math.cos(ry), sinY = Math.sin(ry);
+  const cosX = Math.cos(rx), sinX = Math.sin(rx);
+  const x1 = x * cosY + z * sinY;
+  const z1 = -x * sinY + z * cosY;
+  const y2 = y * cosX - z1 * sinX;
+  const z2 = y * sinX + z1 * cosX;
+  return { x: x1, y: y2, z: z2 };
+}
+
 let gaseousTime = 0;
 let globalRotationAngle = 0;
 let time = 0;
@@ -165,6 +215,12 @@ if (diriAPI.platform === "win32") document.body.classList.add("win32");
 diriAPI.onFloatModeChanged((mode) => {
   currentFloatMode = mode === "mini" ? "mini" : mode === "hidden" ? "hidden" : "standard";
   document.body.classList.toggle("mini", currentFloatMode === "mini");
+  const hintEl = document.getElementById("orbHint");
+  if (hintEl) {
+    hintEl.textContent = currentFloatMode === "mini"
+      ? "单击对话 · 双击展开 · 右键菜单"
+      : "单击录音 · 双击切换形态 · 右键菜单";
+  }
 });
 
 function toggleFloatMode() {
@@ -194,6 +250,8 @@ window.addEventListener("mousemove", (e) => {
     if (inOrb) {
       cursorGlowX = e.clientX - rect.left;
       cursorGlowY = e.clientY - rect.top;
+      lastPointerU = rect.width > 0 ? cursorGlowX / rect.width : 0.5;
+      lastPointerV = rect.height > 0 ? cursorGlowY / rect.height : 0.5;
       lastCursorTime = performance.now();
     }
   }
@@ -224,7 +282,7 @@ function applyStateVisuals(state) {
   if (statusLabelEl) statusLabelEl.textContent = palette.label;
   if (capsuleEl) capsuleEl.classList.toggle("speaking", state === "speaking");
 
-  // 状态真正变化时：徽标弹入 + 球体能量冲击波（同一状态重复通知不重复触发）
+  // 状态真正变化时：徽标弹入 + 球体能量冲击波 + 核心辐射裂纹（同一状态重复通知不重复触发）
   if (lastVisualState !== state) {
     if (statusBadgeEl) {
       statusBadgeEl.classList.remove("pop");
@@ -232,6 +290,7 @@ function applyStateVisuals(state) {
       statusBadgeEl.classList.add("pop");
     }
     pulses.push({ age: 0, maxAge: 1.05, color: palette.main });
+    fracture = { age: 0, maxAge: 1.5 };
     lastVisualState = state;
   }
 }
@@ -540,6 +599,25 @@ function render() {
   orbScale = lerp(orbScale, baseScale * breath, 0.04);
   wakeScale = lerp(wakeScale, targetWakeScale, 0.04);
 
+  // 交互缩放：hover 放大 1.06、按下 0.94、迷你形态 1.08，全部有界 lerp 永不累积。
+  // 在 canvas 内缩放而非 DOM transform，规避 Windows 透明窗口逐帧合成放大 bug。
+  const modeScale = currentFloatMode === "mini" ? 1.08 : 1.0;
+  uiHoverScale = lerp(uiHoverScale, cursorGlowActive ? 1.06 : 1.0, 0.12);
+  uiPressScale = lerp(uiPressScale, isPointerDownOnOrb ? 0.94 : 1.0, 0.20);
+  const uiScale = uiHoverScale * uiPressScale * modeScale;
+  hoverEnergy = lerp(hoverEnergy, cursorGlowActive ? 1.0 : 0.0, 0.10);
+
+  // ── 3D 自转 + 鼠标视差倾斜 + 点击自转脉冲 ──
+  // 转速度：idle ~8.7s/圈、listening ~5s/圈、thinking ~4.2s/圈（time 每帧推进，
+  // 基值 0.012/帧@60fps = 0.72rad/s），状态越活跃转得越快。
+  const activeSpeed = targetConfigs[currentState] ? targetConfigs[currentState].speed : 0.35;
+  sphereRotY += 0.012 + activeSpeed * 0.020 + spinBoost * 0.03;
+  spinBoost = lerp(spinBoost, 0, 0.02);
+  const targetTiltX = cursorGlowActive ? (lastPointerV - 0.5) * 0.65 : 0;
+  const targetTiltY = cursorGlowActive ? (lastPointerU - 0.5) * 0.85 : 0;
+  tiltX = lerp(tiltX, targetTiltX, 0.08);
+  tiltY = lerp(tiltY, targetTiltY, 0.08);
+
   let shakeX = 0, shakeY = 0;
   if (currentState === 'error') {
     shakeX = Math.sin(time * 65) * 2.5;
@@ -550,7 +628,7 @@ function render() {
   ctx.globalAlpha = opacity;
   ctx.scale(dpr, dpr);
   ctx.translate(w / 2 + shakeX, h / 2 + shakeY + slideOffset);
-  ctx.scale(orbScale * wakeScale, orbScale * wakeScale);
+  ctx.scale(orbScale * wakeScale * uiScale, orbScale * wakeScale * uiScale);
   ctx.translate(-w / 2, -h / 2);
 
   const cx = w / 2;
@@ -564,11 +642,15 @@ function render() {
 
   const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
-  drawSphereBase(cx, cy, radius, currentState);
-  drawBaseReflection(cx, cy, radius);
+  ensureDust(radius);
+  drawDeepSpaceCore(cx, cy, radius, currentState, bands);
   drawNeonFilaments(cx, cy, radius, bands.mid, currentState);
-  drawOrbitRing(cx, cy, radius, currentState);
+  draw3DPointSphere(cx, cy, radius, currentState);
+  drawBaseReflection(cx, cy, radius);
+  draw3DOrbits(cx, cy, radius, currentState);
   drawRipples(cx, cy, radius, currentState);
+  drawFracture(cx, cy, radius, currentState);
+  drawNebulaDust(cx, cy, radius, currentState, bands);
   drawGlassScan(cx, cy, radius, currentState);
   drawCursorGlow(cx, cy, radius, currentState);
   drawChromaticEdge(cx, cy, radius, currentState);
@@ -580,7 +662,142 @@ function render() {
   drawGlassHighlights(cx, cy, radius, currentState, isDark);
   ctx.restore();
 
-  // 状态冲击波：能量涟漪从球心冲出球体（clip 外绘制，不被球面裁切）
+  // 能量裂纹生命周期：衰减完成后释放
+  if (fracture) {
+    fracture.age += rawDt;
+    if (fracture.age >= fracture.maxAge) fracture = null;
+  }
+
+  // 球外能量层是常驻元素（非瞬态），需与球体共用同一变换：
+  // 保持 opacity 淡出/淡入、跟随 hover/press/mini 缩放、与 hide 滑动同步，
+  // 否则隐藏时球已透明而能量层全亮度残留、mini 形态不同步放大。
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.translate(w / 2 + shakeX, h / 2 + shakeY + slideOffset);
+  ctx.scale(orbScale * wakeScale * uiScale, orbScale * wakeScale * uiScale);
+  ctx.translate(-w / 2, -h / 2);
+  drawEnergyField(cx, cy, radius, currentState, bands);
+  drawCorePulse(cx, cy, radius, currentState);
+  drawEmittedParticles(cx, cy, radius, currentState, bands, rawDt);
+  ctx.restore();
+
+  /** 能量场外扩：球体外圈始终存在的呼吸光晕（能量"溢出"球体），状态激活/hover 时
+ *  更亮更大，speaking 随音量膨胀——让球不再是封闭球体，而是向外辐射的能量源。 */
+function drawEnergyField(cx, cy, radius, activeState, bands) {
+  const palette = palettes[activeState] || palettes.idle;
+  const rgb = hexToRgb(palette.main);
+  const active = activeState === "speaking" || activeState === "listening";
+  const vol = activeState === "speaking" && bands ? bands.high : 0;
+  const hover = hoverEnergy;
+
+  const breath = 1 + Math.sin(time * 0.22) * 0.05;
+  const rOut = radius * (1.42 + vol * 0.30 + hover * 0.12) * breath;
+  const baseA = (active ? 0.16 : 0.07) + vol * 0.16 + hover * 0.05;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  const g = ctx.createRadialGradient(cx, cy, radius * 0.9, cx, cy, rOut);
+  g.addColorStop(0, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${baseA})`);
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cy, rOut, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 能量鞘边缘：一圈细亮的呼吸环（vol 驱动抖动），定义能量场边界
+  const edgeA = (active ? 0.20 : 0.08) + vol * 0.18 + hover * 0.05;
+  const eR = rOut * 0.94;
+  const wob = Math.sin(time * 0.9) * (vol * 0.5 + 0.08);
+  ctx.beginPath();
+  ctx.arc(cx, cy, eR + wob, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${edgeA})`;
+  ctx.lineWidth = 1.0 + vol * 0.8;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 核心心跳：每 2.4s（真实时间）从球心透出球体向外的同心能量波（活的发动机感），speaking 加速。
+ *  注意 time 以 6x 真实时间前进，故周期需乘以 6：idle 2.4s→14.4、speaking 1.1s→6.6。 */
+function drawCorePulse(cx, cy, radius, activeState) {
+  const palette = palettes[activeState] || palettes.idle;
+  const rgb = hexToRgb(palette.main);
+  const hrgb = hexToRgb(palette.highlight);
+  const speaking = activeState === "speaking";
+  const interval = speaking ? 6.6 : 14.4;
+  const cycles = speaking ? 2 : 1; // 说话时双波叠加
+
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  for (let c = 0; c < cycles; c++) {
+    const phase = ((time % interval) + c * interval / cycles) % interval;
+    const prog = phase / interval;
+    const r = radius * (0.28 + prog * 1.35);
+    const a = (1 - prog) * (speaking ? 0.30 : 0.18);
+    if (a <= 0.01) continue;
+    // 波前高亮薄环 + 柔光填充
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, ${a})`;
+    ctx.lineWidth = 1.2 * (1 - prog) + 0.3;
+    ctx.stroke();
+    const fillG = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r);
+    fillG.addColorStop(0, "rgba(255,255,255,0)");
+    fillG.addColorStop(1, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${a * 0.5})`);
+    ctx.fillStyle = fillG;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** 能量外溢粒子：speaking/listening 时从球面持续迸发微型光点向外漂移消散（能量持续放射），
+ *  hover 时也能少量外溢强化「活体」感知 */
+let emittedParticles = [];
+function drawEmittedParticles(cx, cy, radius, activeState, bands, dtRef) {
+  const speaking = activeState === "speaking";
+  const listening = activeState === "listening";
+  const vol = speaking && bands ? bands.high : 0;
+  const spawnRate = (speaking ? 0.9 + vol * 1.2 : listening ? 0.35 : 0.08) + hoverEnergy * 0.35;
+  const palette = palettes[activeState] || palettes.idle;
+  const hrgb = hexToRgb(palette.highlight);
+  const dtSec = dtRef || 0.016;
+
+  if (Math.random() < spawnRate * 0.06 && emittedParticles.length < 46) {
+    const a = Math.random() * Math.PI * 2;
+    emittedParticles.push({
+      a,
+      r: radius + 1 + Math.random() * 4,
+      v: 0.28 + Math.random() * 0.5 + vol * 0.6,
+      life: 0,
+      maxLife: 0.5 + Math.random() * 0.7,
+      size: 0.6 + Math.random() * 1.1,
+      drift: (Math.random() - 0.5) * 0.4,
+    });
+  }
+
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  for (let i = emittedParticles.length - 1; i >= 0; i--) {
+    const p = emittedParticles[i];
+    p.life += dtSec;
+    if (p.life >= p.maxLife) { emittedParticles.splice(i, 1); continue; }
+    const prog = p.life / p.maxLife;
+    p.r += p.v * (1 - prog * 0.5);
+    p.a += p.drift * 0.02;
+    const a = (1 - prog) * (speaking ? 0.55 : 0.35);
+    if (a <= 0.01) continue;
+    const px = cx + Math.cos(p.a) * p.r;
+    const py = cy + Math.sin(p.a) * p.r;
+    ctx.fillStyle = `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, ${a})`;
+    ctx.beginPath();
+    ctx.arc(px, py, p.size * (1 - prog * 0.6), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// 状态冲击波：能量涟漪从球心冲出球体（clip 外绘制，不被球面裁切）
   // 双层结构：内层白色核心环（能量源） + 外层状态色光环（扩散），末端亮核随衰减缩小。
   for (let i = pulses.length - 1; i >= 0; i--) {
     const p = pulses[i];
@@ -670,27 +887,124 @@ function render() {
   }
 }
 
-function drawSphereBase(cx, cy, radius, activeState) {
+/** 3D 恒星点云球体：球面 360 点按 Fibonacci 均匀分布，绕 Y 轴自转 + 鼠标视差
+ *  tilt，透视投影（近大远小、深处暗近处亮），按深度远→近排序绘制。
+ *  这是整颗球的主体立体感来源——不再是平面渐变，而是真实旋转的 3D 天体。 */
+function draw3DPointSphere(cx, cy, radius, activeState) {
   const palette = palettes[activeState] || palettes.idle;
+  const rgb = hexToRgb(palette.main);
+  const hrgb = hexToRgb(palette.highlight);
+  const n = spherePoints.length;
+  const f = radius * 3.0;
+  const r = radius * 0.86;
+  const ry = sphereRotY + tiltY;
+  const rx = tiltX;
 
-  ctx.fillStyle = "#ffffff";
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-  ctx.fill();
+  // 投影并计算深度
+  const proj = [];
+  for (let i = 0; i < n; i++) {
+    const p = spherePoints[i];
+    const q = rotateYX(p.x, p.y, p.z, ry, rx);
+    const depth = f / (f + q.z * r);
+    proj.push({
+      x: cx + q.x * r * depth,
+      y: cy + q.y * r * depth,
+      z: q.z,
+      depth,
+    });
+  }
+  proj.sort((a, b) => a.z - b.z);
 
-  const baseGrad = ctx.createLinearGradient(
-    cx - radius, cy - radius,
-    cx + radius, cy + radius
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  for (let i = 0; i < n; i++) {
+    const d = proj[i];
+    const depth01 = (d.z + 1) / 2;
+    const size = 1.0 * d.depth + 0.35;
+    const alpha = 0.05 + depth01 * 0.30;
+    // 深处偏状态色，近处偏高亮
+    const mix = depth01;
+    const cr = Math.floor(lerp(rgb.r, hrgb.r, mix * 0.85));
+    const cg = Math.floor(lerp(rgb.g, hrgb.g, mix * 0.85));
+    const cb = Math.floor(lerp(rgb.b, hrgb.b, mix * 0.85));
+    ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** 深空能量核心：暗物质基底 + 内部白色等离子核（体积光）+ 状态色辉光 + 湍流星云亮斑。
+ *  相比旧版「线性渐变球」：白色核心从内部照亮，外层状态色渐变扩散，配合缓慢旋转的
+ *  湍流光斑，呈现「活体能量」的神秘体积感而非平面霓虹贴片。 */
+function drawDeepSpaceCore(cx, cy, radius, activeState, bands) {
+  const palette = palettes[activeState] || palettes.idle;
+  const rgb = hexToRgb(palette.main);
+  const hrgb = hexToRgb(palette.highlight);
+
+  // 1. 深空基底：状态色暗部 → 近黑，底部更沉（保留玻璃球轮廓）
+  const baseGrad = ctx.createRadialGradient(
+    cx, cy, radius * 0.08,
+    cx, cy, radius
   );
-
-  baseGrad.addColorStop(0, palette.linearGradient.topLeft);
-  baseGrad.addColorStop(0.5, palette.linearGradient.middle);
-  baseGrad.addColorStop(1, palette.linearGradient.bottomRight);
-
+  baseGrad.addColorStop(0, palette.dark);
+  baseGrad.addColorStop(0.55, palette.deepDark);
+  baseGrad.addColorStop(1, "rgba(1, 2, 8, 1)");
   ctx.fillStyle = baseGrad;
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
+
+  const coreAmp = 0.5 + hoverEnergy * 0.5; // hover 时核心更亮
+
+  // 2. 白色等离子核心（内部体积光，深空能量的"燃点"）
+  const coreR = radius * 0.30;
+  const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
+  coreGrad.addColorStop(0, `rgba(255,255,255,${0.85 * coreAmp})`);
+  coreGrad.addColorStop(0.4, `rgba(255,255,255,${0.34 * coreAmp})`);
+  coreGrad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.fillStyle = coreGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 3. 状态色辉光（核心向外扩散，给等离子体染色）
+  const glowR = radius * 0.66;
+  const glowGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+  glowGrad.addColorStop(0, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${0.52 * coreAmp})`);
+  glowGrad.addColorStop(0.5, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${0.16 * coreAmp})`);
+  glowGrad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = glowGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // 4. 湍流星云亮斑：绕核心缓慢公转的柔光斑（神秘的活体感，speaking 时随音量脉动）
+  const layers = 4;
+  const volBoost = activeState === "speaking" && bands ? bands.high * 0.04 : 0;
+  for (let i = 0; i < layers; i++) {
+    const angle = globalRotationAngle * 0.9 + i * (Math.PI * 2 / layers);
+    const dist = radius * (0.30 + 0.13 * Math.sin(time * 0.045 + i * 2.1));
+    const px = cx + Math.cos(angle) * dist;
+    const py = cy + Math.sin(angle) * dist * 0.82;
+    const blobR = radius * (0.28 + 0.12 * Math.sin(time * 0.06 + i * 1.9));
+    const bA = 0.06 + 0.05 * Math.sin(time * 0.03 + i * 1.3) + volBoost;
+    if (bA <= 0.01) continue;
+    const blobGrad = ctx.createRadialGradient(px, py, 0, px, py, blobR);
+    blobGrad.addColorStop(0, `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, ${bA})`);
+    blobGrad.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = blobGrad;
+    ctx.beginPath();
+    ctx.arc(px, py, blobR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 /** 底部环境反光：球体下缘内侧的柔和环境光，让球体"坐"在环境里而非悬浮贴片 */
@@ -707,6 +1021,85 @@ function drawBaseReflection(cx, cy, radius) {
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+}
+
+/** 初始化球内尘埃微粒：位置用半径比例，radius 变化无需重建 */
+function ensureDust(radius) {
+  if (dustInited || radius <= 0) return;
+  dustInited = true;
+  const count = 42;
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = Math.pow(Math.random(), 0.6) * radius * 0.82;
+    dust.push({
+      a,
+      d,
+      speed: 0.0025 + Math.random() * 0.006,
+      wobbleAmp: 0.6 + Math.random() * 2.2,
+      wobbleFreq: 0.05 + Math.random() * 0.09,
+      size: 0.4 + Math.random() * 0.8,
+      phase: Math.random() * Math.PI * 2,
+      twinkle: 0.15 + Math.random() * 0.35,
+    });
+  }
+}
+
+/** 球内微观尘埃：低速公转 + 正弦摆动 + 微弱闪烁（深空微观感）。
+ *  speaking 时随音量加速、亮度随高频闪烁，与表面火花呼应。 */
+function drawNebulaDust(cx, cy, radius, activeState, bands) {
+  const vol = activeState === "speaking" && bands ? bands.high : 0;
+  const speedBoost = 1 + vol * 2.2;
+  const twinkleBoost = 0.25 + vol * 0.55;
+  ctx.save();
+  for (let i = 0; i < dust.length; i++) {
+    const p = dust[i];
+    p.a += p.speed * 0.32 * speedBoost;
+    const wob = Math.sin(time * 0.18 + p.phase) * p.wobbleAmp;
+    const px = cx + Math.cos(p.a) * p.d + wob;
+    const py = cy + Math.sin(p.a) * p.d * 0.9 + Math.cos(p.phase * 2) * 1.2;
+    const twinkle = p.twinkle * (0.6 + 0.4 * Math.sin(time * 0.45 + p.phase * 3)) + twinkleBoost;
+    if (twinkle <= 0.03) continue;
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = `rgba(215, 228, 255, ${twinkle})`;
+    ctx.beginPath();
+    ctx.arc(px, py, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** 能量裂纹：状态切换时核心辐射的亮纹（神秘符文感），衰减后隐去；error 态持续脉动 */
+function drawFracture(cx, cy, radius, activeState) {
+  const hasFracture = fracture && fracture.age < fracture.maxAge;
+  const isError = activeState === "error";
+  if (!hasFracture && !isError) return;
+  const palette = palettes[activeState] || palettes.idle;
+  const hrgb = hexToRgb(palette.highlight);
+  const frac = hasFracture ? 1 - fracture.age / fracture.maxAge : 0.55 + 0.35 * Math.sin(time * 1.2);
+  if (frac <= 0.02) return;
+  const count = isError ? 7 : 5;
+  const baseAngle = time * 0.04;
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  for (let i = 0; i < count; i++) {
+    const a = baseAngle + i * (Math.PI * 2 / count) + Math.sin(time * 0.3 + i) * 0.12;
+    const len = radius * (0.30 + 0.22 * Math.abs(Math.sin(time * 0.8 + i * 2.4)));
+    const x0 = cx + Math.cos(a) * radius * 0.22;
+    const y0 = cy + Math.sin(a) * radius * 0.22;
+    const x1 = cx + Math.cos(a) * (radius * 0.22 + len);
+    const y1 = cy + Math.sin(a) * (radius * 0.22 + len);
+    const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+    grad.addColorStop(0, `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, ${0.75 * frac})`);
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 0.9;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -825,7 +1218,8 @@ function drawNeonFilaments(cx, cy, radius, vol, activeState) {
     ctx.stroke();
 
     drawPath();
-    const centerAlpha = (activeState === "speaking" || activeState === "listening") ? 0.70 + vol * 0.25 : 0.62;
+    // 3D 恒星点云已作为主体纹理，光丝降为暗背景极光（避免与点云叠加成噪点）
+    const centerAlpha = (activeState === "speaking" || activeState === "listening") ? 0.42 + vol * 0.18 : 0.34;
     ctx.strokeStyle = `rgba(${Math.floor(lerp(rgb.r, 255, 0.45))}, ${Math.floor(lerp(rgb.g, 255, 0.45))}, ${Math.floor(lerp(rgb.b, 255, 0.45))}, ${centerAlpha})`;
     ctx.lineWidth = 1.5;
     ctx.stroke();
@@ -867,46 +1261,92 @@ function drawGlassWallRefraction(cx, cy, radius) {
   ctx.restore();
 }
 
-/** 行星环光带：斜穿球体的科技光环（与应用图标视觉语言统一），speaking/listening 时高亮。
- *  环上沿椭圆轨道流动的能量光点带尾迹，强化「能量沿环传输」的感知。 */
-function drawOrbitRing(cx, cy, radius, activeState) {
-  const active = activeState === "speaking" || activeState === "listening";
+/** 3D 双轨道环：在真实 3D 空间倾斜的两条轨道，绕 Y 轴随球体自转（速度差形成相对运动），
+ *  透视投影后呈现真实立体椭圆；远侧部分因深度暗化，近侧高亮——轨道不再是 2D 贴片，
+ *  而是环绕球体的立体环带。带流动能量点与尾迹（speaking/listening 高亮）。 */
+function draw3DOrbits(cx, cy, radius, activeState) {
   const palette = palettes[activeState] || palettes.idle;
   const rgb = hexToRgb(palette.main);
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(-Math.PI / 10);
-  const rx = radius * 1.12, ry = radius * 0.42;
-  ctx.beginPath();
-  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${active ? 0.5 : 0.22})`;
-  ctx.lineWidth = active ? 2.8 : 1.5;
-  ctx.stroke();
+  const hrgb = hexToRgb(palette.highlight);
+  const active = activeState === "speaking" || activeState === "listening";
+  const f = radius * 3.0;
+  const segments = 96;
 
-  if (active || activeState === "thinking") {
-    ctx.globalCompositeOperation = "screen";
-    const dots = active ? 5 : 3;
-    const speed = active ? 0.30 : 0.14;
-    const hrgb = hexToRgb(palette.highlight);
-    const headSize = active ? 2.4 : 1.7;
-    for (let i = 0; i < dots; i++) {
-      const headT = (time * speed + i / dots) % 1;
-      const ha = headT * Math.PI * 2;
-      // 头部亮点
+  const rings = [
+    { tilt: -Math.PI / 10, radiusK: 1.14, speed: 0.5, phase: 0 },
+    { tilt: Math.PI / 3.4, radiusK: 1.06, speed: -0.32, phase: Math.PI / 2 },
+  ];
+
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  for (let ri = 0; ri < rings.length; ri++) {
+    const ring = rings[ri];
+    const rr = radius * ring.radiusK;
+    const ry = sphereRotY * ring.speed + ring.phase + tiltY * 0.5;
+    const cosT = Math.cos(ring.tilt), sinT = Math.sin(ring.tilt);
+    const cosY = Math.cos(ry), sinY = Math.sin(ry);
+
+    const pts = [];
+    for (let j = 0; j <= segments; j++) {
+      const a = (j / segments) * Math.PI * 2;
+      const cx0 = Math.cos(a) * rr;
+      const cz = Math.sin(a) * rr;
+      // tilt 绕 X 轴
+      const y1 = -cz * sinT;
+      const z1 = cz * cosT;
+      // 绕 Y 自转
+      const x2 = cx0 * cosY + z1 * sinY;
+      const z2 = -cx0 * sinY + z1 * cosY;
+      const depth = f / (f + z2);
+      pts.push({ x: cx + x2 * depth, y: cy + y1 * depth, z: z2 });
+    }
+    // 远→近，让近侧线条盖住远侧，形成立体遮挡
+    pts.sort((a, b) => a.z - b.z);
+
+    // 分段绘制：远端弱、近端亮（深度立体感）
+    for (let j = 1; j < pts.length; j++) {
+      const depth01 = (pts[j].z + rr) / (2 * rr);
+      const lineAlpha = (active ? 0.30 : 0.13) * (0.35 + depth01 * 0.65);
+      ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${lineAlpha})`;
+      ctx.lineWidth = (active ? 1.6 : 1.0) * (0.6 + depth01 * 0.4);
       ctx.beginPath();
-      ctx.arc(Math.cos(ha) * rx, Math.sin(ha) * ry, headSize, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, 0.95)`;
-      ctx.fill();
-      // 拖尾：沿轨道反向渐隐的 4 个光点
-      for (let k = 1; k <= 4; k++) {
-        const tt = headT - k * 0.05;
-        if (tt < 0) continue;
-        const aa = tt * Math.PI * 2;
-        const alpha = (1 - k / 5) * (active ? 0.6 : 0.35);
+      ctx.moveTo(pts[j - 1].x, pts[j - 1].y);
+      ctx.lineTo(pts[j].x, pts[j].y);
+      ctx.stroke();
+    }
+
+    // 流动能量点 + 尾迹
+    if (active || activeState === "thinking") {
+      const dots = active ? 5 : 3;
+      const speed = active ? 0.30 : 0.14;
+      for (let i = 0; i < dots; i++) {
+        const headT = (time * speed + i / dots) % 1;
+        const ha = headT * Math.PI * 2;
+        const makeP = (ang) => {
+          const cx0 = Math.cos(ang) * rr;
+          const cz = Math.sin(ang) * rr;
+          const y1 = -cz * sinT;
+          const z1 = cz * cosT;
+          const x2 = cx0 * cosY + z1 * sinY;
+          const z2 = -cx0 * sinY + z1 * cosY;
+          const depth = f / (f + z2);
+          return { x: cx + x2 * depth, y: cy + y1 * depth, z: z2, depth };
+        };
+        const head = makeP(ha);
+        ctx.fillStyle = `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, ${active ? 0.95 : 0.7})`;
         ctx.beginPath();
-        ctx.arc(Math.cos(aa) * rx, Math.sin(aa) * ry, headSize * (1 - k * 0.14), 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, ${alpha})`;
+        ctx.arc(head.x, head.y, 1.5 * head.depth, 0, Math.PI * 2);
         ctx.fill();
+        for (let k = 1; k <= 4; k++) {
+          const tt = headT - k * 0.05;
+          if (tt < 0) continue;
+          const tail = makeP(tt * Math.PI * 2);
+          const alphaT = (1 - k / 5) * (active ? 0.55 : 0.3);
+          ctx.fillStyle = `rgba(${hrgb.r}, ${hrgb.g}, ${hrgb.b}, ${alphaT})`;
+          ctx.beginPath();
+          ctx.arc(tail.x, tail.y, 1.5 * tail.depth * (1 - k * 0.15), 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
   }
@@ -932,6 +1372,21 @@ function drawRipples(cx, cy, radius, activeState) {
 }
 
 function drawGlassHighlights(cx, cy, radius, activeState, isDark) {
+  // 镜面高光点：左上偏上的小柔光斑，模拟单一光源在玻璃球面的直接反射（体积感关键）
+  const sx = cx - radius * 0.36;
+  const sy = cy - radius * 0.42;
+  const specG = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius * 0.20);
+  specG.addColorStop(0, "rgba(255,255,255,0.42)");
+  specG.addColorStop(0.35, "rgba(255,255,255,0.10)");
+  specG.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.fillStyle = specG;
+  ctx.beginPath();
+  ctx.arc(sx, sy, radius * 0.20, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
   ctx.beginPath();
   ctx.arc(cx, cy, radius - 1.0, -Math.PI * 0.85, -Math.PI * 0.15);
   ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
@@ -1017,6 +1472,32 @@ function spawnRipple() {
   el.addEventListener("animationend", () => el.remove());
 }
 
+// 单击/双击消歧：orb 区域的单击延迟 300ms 执行，若在窗口内再来一次 click 则
+// 取消并交给 dblclick 处理。彻底解决「双击 orb 误触发录音」与形态切换不稳。
+let pendingOrbClickTimer = null;
+function cancelPendingOrbClick() {
+  if (pendingOrbClickTimer) {
+    clearTimeout(pendingOrbClickTimer);
+    pendingOrbClickTimer = null;
+  }
+}
+function handleOrbSingleClick() {
+  pendingOrbClickTimer = null;
+  if (dragMoved) return;
+  spawnRipple();
+  if (currentState === "listening") {
+    diriAPI.stopRecording();
+  } else {
+    diriAPI.startRecording();
+  }
+}
+function handleOrbDoubleClick() {
+  cancelPendingOrbClick();
+  if (dragMoved) return;
+  spawnRipple();
+  toggleFloatMode();
+}
+
 // ── 自绘右键菜单 ──
 const floatMenuEl = document.getElementById("floatMenu");
 function showFloatMenu(x, y) {
@@ -1053,12 +1534,15 @@ window.addEventListener("mousedown", (e) => {
   if (e.button === 0) hideFloatMenu();
 }, true);
 
-let lastClickTime = 0;
+// 点击交互：
+// - 说话中（speaking）：点击任意位置静音当前回答 → 进入 muted 待命态（即时响应）。
+// - 已静音（muted）：点击任意位置重听被静音的最后回答（即时响应）。
+// - 空闲/思考/错误：单击 orb → 切换录音（延迟 300ms 消歧，不误触双击）；
+//   双击 orb → standard/mini 切换（双击不触发录音）；
+//   点击文本区 → 打开设置窗口。
 window.addEventListener("click", (e) => {
   if (dragMoved) return; // 拖动后不当作点击
-  const now = Date.now();
-  if (now - lastClickTime < 320) return; // 双击第二击，交给 dblclick 处理
-  lastClickTime = now;
+  // 说话/静音态的即时动作无双击冲突
   if (currentState === "speaking") {
     spawnRipple();
     diriAPI.muteCurrentTts();
@@ -1070,33 +1554,42 @@ window.addEventListener("click", (e) => {
     return;
   }
   const isOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
-  if (isOrb) {
-    spawnRipple();
-    if (currentState === "listening") {
-      diriAPI.stopRecording();
-    } else {
-      diriAPI.startRecording();
-    }
-  } else {
+  if (!isOrb) {
+    // mini 形态下窗口即球体本身，球外透明区点击不动作（避免 Windows 下误开设置）
+    if (currentFloatMode === "mini") return;
+    // 文本区/空白：打开设置（取消在途的 orb 单击，防止误开录音）
+    cancelPendingOrbClick();
     diriAPI.openSettings();
+    return;
   }
+  // orb 区域：第二击取消第一击的延迟动作，交给 dblclick；否则排程单击
+  if (pendingOrbClickTimer) {
+    cancelPendingOrbClick();
+    return;
+  }
+  pendingOrbClickTimer = setTimeout(handleOrbSingleClick, 250);
 });
 window.addEventListener("dblclick", (e) => {
   if (dragMoved) return;
+  cancelPendingOrbClick();
   if (isPointInElement(e.clientX, e.clientY, orbContainer)) {
-    spawnRipple();
-    toggleFloatMode();
+    handleOrbDoubleClick();
   }
 });
 
-// 按压反馈：鼠标按下 orb 时按压缩实（放大缩小阻尼），抬起恢复
+// 按压反馈（canvas 内缩放）：按下 orb 缩小、抬起恢复；右键不参与
 window.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
   if (isPointInElement(e.clientX, e.clientY, orbContainer)) {
-    orbContainer.classList.add("pressed");
+    isPointerDownOnOrb = true;
+    spinBoost = 1.2; // 点击自转脉冲：球体受击加速旋转（3D 立体交互反馈）
   }
 });
 window.addEventListener("mouseup", () => {
-  orbContainer.classList.remove("pressed");
+  isPointerDownOnOrb = false;
+});
+window.addEventListener("mouseleave", () => {
+  isPointerDownOnOrb = false;
 });
 
 // 初始状态色（避免首帧等待 IPC 事件才上色）

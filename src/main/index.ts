@@ -82,6 +82,7 @@ let playingTtsSessionId: number | null = null;  // session ID when TTS playback 
 let toolAckPending = false;
 let wakeWordMonitor: WakeWordMonitor | null = null;
 let currentSessionId = 0;  // increments on each new session, used to detect stale async callbacks
+let currentState: string = "idle"; // 最近一次 updateState 的状态，供 wake 回调判断「任务途中插入需求」
 let isScreenLocked = false;
 
 const volumeGuard = new VolumeGuard();
@@ -264,6 +265,25 @@ function setupWakeWord(): void {
 
     log(`Wake word detected! command="${command || ""}"`);
 
+    // 任务进行中（thinking/processing，含长工具任务）喊醒：
+    // 不再破坏式 abortAllTasks 销毁上下文，而是直接接管为新一轮指令——
+    // handleUserInput 内部 currentSessionId++ 会使旧一轮 LLM 回调自然失效，
+    // 工具任务上下文由 ConversationManager 延续，实现「任务途中插入临时需求」。
+    // 仅当唤醒附带命令时才走接管；仅喊唤醒词（无命令）则照旧中断并聆听新指令。
+    const isMidTask = isSessionActive && (currentState === "thinking" || currentState === "processing");
+    if (isMidTask && command?.trim()) {
+      log(`Wake word during active task: switching to new command "${command.trim()}" instead of aborting`);
+      wasWokenByVoice = true;
+      stopAutoHideTimer();
+      showOrb();
+      playSound("Purr");
+      handleUserInput(command.trim());
+      return;
+    }
+    if (isMidTask) {
+      log("Wake word during active task without command: aborting to listen for new instruction");
+    }
+
     // Abort all current tasks (LLM, TTS, ASR, timers)
     abortAllTasks();
 
@@ -398,6 +418,12 @@ const VOICE_SILENCE_MS = 2000;
 // 唤醒/持续对话 loop back 后等待用户开口的时间。真机实测：TTS 回复播完用户
 // 需要反应时间，旧 3s 常被静音超时切断（用户感知「对话老中断」），放宽到 8s。
 const VOICE_START_SILENCE_MS = 8000;
+
+// 语音连续对话空转录兜底：唤醒后用户已开口（有 partial）但最终 ASR 返回空
+// （唤醒词吞掉命令 / 麦克风瞬时静音 / 管线重建期讲话），重听一轮避免「任务未
+// 完成就退出」；仍为空才回落 idle。仅在 wasWokenByVoice（已开口）时触发。
+const MAX_EMPTY_TRANSCRIPT_RETRIES = 1;
+let emptyTranscriptRetries = 0;
 
 function stopSpeaking(): void {
   ttsPipeline.stop();
@@ -870,11 +896,22 @@ function handleUserInput(text: string): void {
   isSessionActive = false;
   const gen = currentSessionId;
   if (!text.trim()) {
+    // 语音连续对话中用户已开口但 ASR 返回空（唤醒词吞命令/管线重建期讲话）：
+    // 重听一轮，避免直接 idle「不理人」；重试预算用尽或非语音路径才回落 idle。
+    if (wasWokenByVoice && emptyTranscriptRetries < MAX_EMPTY_TRANSCRIPT_RETRIES) {
+      emptyTranscriptRetries++;
+      log(`Empty transcript (retry ${emptyTranscriptRetries}/${MAX_EMPTY_TRANSCRIPT_RETRIES}), looping back to listen`);
+      playSound("Frog");
+      startVoiceListening();
+      return;
+    }
     log("Empty transcript, going idle");
+    emptyTranscriptRetries = 0;
     updateState("idle");
     startAutoHideTimer();
     return;
   }
+  emptyTranscriptRetries = 0; // 有效输入重置重听预算
 
   conversationHistoryStore.add("user", text);
 
@@ -1293,10 +1330,7 @@ function startAutoHideTimer(): void {
     // 进入闲置立即恢复播放(不等悬浮球消失)
     unmuteSystemOnly();
     restoreMediaOnly();
-    // Resume wake word monitoring when going idle
-    if (wakeWordMonitor && !isSessionActive && !isSpeaking && !isScreenLocked) {
-      wakeWordMonitor.resume();
-    }
+    // 唤醒词监听已由 syncWakeWordMonitor(idle) 在 updateState 统一恢复，无需在此单独处理
   }, AUTO_HIDE_TIMEOUT_MS);
 }
 
@@ -1320,10 +1354,26 @@ function restoreMediaOnly(): Promise<void> {
 }
 
 function updateState(state: string, message?: string, metadata?: Record<string, any>): void {
+  currentState = state;
   const payload = { state, ...(message ? { message } : {}), ...(metadata || {}) };
   log(`State update: ${state} ${message || ""} ${metadata ? JSON.stringify(metadata) : ""}`.trim());
   sendToFloatWindow(IPC_CHANNELS.STATE_UPDATE, JSON.stringify(payload));
   handleFloatAutoMode(state);
+  syncWakeWordMonitor(state);
+}
+
+// 唤醒词监控生命周期与状态机联动：
+// - listening/speaking：麦克风正被会话占用或正放音，暂停唤醒，避免自触发/误触发；
+// - processing/thinking（长任务）：保持唤醒活跃，用户可中途插入新需求或随时打断；
+// - idle/error：立即恢复，消除「回答完 15 秒内再喊嘿 Daisy 无响应」的死区
+//   （原实现仅在 auto-hide 15s 定时器触发后才 resume，长任务期间与回答后短期都无法再唤醒）。
+function syncWakeWordMonitor(state: string): void {
+  if (!wakeWordMonitor || !config.wakeWord.enabled || isScreenLocked) return;
+  if (state === "listening" || state === "speaking") {
+    wakeWordMonitor.pause();
+    return;
+  }
+  wakeWordMonitor.resume();
 }
 
 // ── 悬浮球智能自动收纳 ──
@@ -1835,16 +1885,21 @@ function setupIpc(): void {
     gpuDownloadInFlight = true;
     try {
       // 第一时间通知前端进入下载态，避免"点了没反应"的感知
-      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "download", percent: 0 });
+      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "download", percent: 0, received: 0, total: 0, speed: 0, source: "" });
       // 部署前先释放 whisper-server 对 bin 目录 DLL 的占用（Windows 文件锁）
       await whisperServer.dispose();
-      const zipPath = await downloadWhisperGpuComponent((percent) => {
+      const zipPath = await downloadWhisperGpuComponent((progress) => {
+        const pct = progress.total > 0 ? Math.min(99.9, Math.floor((progress.received / progress.total) * 1000) / 10) : 0;
         sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, {
           phase: "download",
-          percent,
+          percent: pct,
+          received: progress.received,
+          total: progress.total,
+          speed: progress.speed,
+          source: progress.source,
         });
       });
-      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "extract", percent: 100 });
+      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "extract", percent: 100, received: 0, total: 0, speed: 0, source: "" });
       await extractWhisperGpuComponent(zipPath);
       fs.promises.unlink(zipPath).catch(() => {});
       log("whisperGpu: GPU component deployed, restart to activate");
@@ -1852,7 +1907,7 @@ function setupIpc(): void {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logError("whisperGpu deploy failed", error);
-      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "download", percent: 0 });
+      sendToSettingsWindow(IPC_CHANNELS.WHISPER_GPU_PROGRESS, { phase: "download", percent: 0, received: 0, total: 0, speed: 0, source: "" });
       return { success: false, error: msg };
     } finally {
       gpuDownloadInFlight = false;

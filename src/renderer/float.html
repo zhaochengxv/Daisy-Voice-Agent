@@ -126,12 +126,41 @@
       position: relative;
       z-index: 2;
       cursor: pointer;
-      transition: transform 240ms cubic-bezier(0.34, 1.56, 0.64, 1);
+      /* 注意：悬浮/按压/迷你放大一律在 canvas 渲染循环内实现（有界 lerp），
+         不在 DOM 上做 transform/transition —— Windows 透明窗口对 CSS transform
+         过渡会逐帧重算合成缓冲导致放大累积（「双击后悬停一直变大」根因）。 */
     }
-    /* 悬停微浮起 + 光环放大（macOS 穿透 forward 亦转发 mousemove，两平台均生效） */
-    #orbContainer:hover { transform: scale(1.05); }
-    /* 按下按压缩实感 */
-    #orbContainer.pressed { transform: scale(0.93); transition: transform 90ms ease; }
+    /* 悬停操作提示：仅 hover 时淡入，克制的浮出气泡（可发现性，不破坏科技感） */
+    #orbHint {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 3px 9px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+      color: rgba(255, 255, 255, 0.58);
+      background: rgba(8, 9, 18, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      box-shadow: 0 6px 16px -4px rgba(0, 0, 0, 0.5);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease;
+      z-index: 5;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    #orbContainer:hover #orbHint { opacity: 1; }
+    /* mini 形态：悬浮球即球体本身，提示条会被窗口裁切，隐藏 */
+    body.mini #orbHint { display: none; }
+    body.win32 #orbHint {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+      background: rgba(14, 15, 26, 0.92);
+    }
     #orbCanvas {
       width: 100%; height: 100%;
       display: block;
@@ -152,7 +181,7 @@
       z-index: 1;
       animation: haloBreathe 3.2s ease-in-out infinite;
     }
-    #orbContainer:hover #orbHalo { opacity: 1; transform: scale(1.12); }
+    #orbContainer:hover #orbHalo { opacity: 1; }
 
     /* 点击波纹（mousedown 在 orb 上扩散的水波） */
     @keyframes orbRipple {
@@ -290,7 +319,7 @@
     }
     body.mini #orbContainer {
       flex: none;
-      transform: scale(1.08);
+      /* 迷你放大并入 canvas orbScale（modeScale），见 float.js */
     }
     /* 迷你形态：球体更大更有存在感，呼吸光环增强（唯一视觉焦点） */
     body.mini #orbHalo { inset: -20px; }
@@ -361,6 +390,7 @@
     <div id="orbContainer">
       <div id="orbHalo"></div>
       <canvas id="orbCanvas"></canvas>
+      <div id="orbHint">单击录音 · 双击切换形态 · 右键菜单</div>
     </div>
     <div id="middleZone">
       <div id="statusBadge"><span class="dot"></span><span id="statusLabel">待命</span></div>

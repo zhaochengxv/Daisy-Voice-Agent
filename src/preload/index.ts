@@ -48,7 +48,7 @@ export interface DiriAPI {
   }>;
   downloadWhisperGpu: () => Promise<{ success: boolean; error?: string }>;
   removeWhisperGpu: () => Promise<{ success: boolean; error?: string }>;
-  onWhisperGpuProgress: (callback: (progress: { phase: "download" | "extract"; percent: number }) => void) => () => void;
+  onWhisperGpuProgress: (callback: (progress: { phase: "download" | "extract"; percent: number; received: number; total: number; speed: number; source: string }) => void) => () => void;
 
   // Shortcut capture
   captureShortcut: () => void;
@@ -150,7 +150,7 @@ const api: DiriAPI = {
   getWhisperGpuStatus: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_STATUS),
   downloadWhisperGpu: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_DOWNLOAD),
   removeWhisperGpu: () => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_GPU_REMOVE),
-  onWhisperGpuProgress: createListener<{ phase: "download" | "extract"; percent: number }>(IPC_CHANNELS.WHISPER_GPU_PROGRESS),
+  onWhisperGpuProgress: createListener<{ phase: "download" | "extract"; percent: number; received: number; total: number; speed: number; source: string }>(IPC_CHANNELS.WHISPER_GPU_PROGRESS),
 
   captureShortcut: () => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE),
   cancelShortcutCapture: () => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE_CANCEL),
