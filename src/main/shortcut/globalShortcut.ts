@@ -254,10 +254,17 @@ export class GlobalShortcut extends EventEmitter {
       this.pressedTimer = null;
     }
     if (this.shortcutContainsKey(this.targetKeys, key) && this.isRecording) {
+      // 先清再排：Windows uiohook 一次物理松键可能触发多个 keyup 事件，
+      // 若不清理旧 timer 会排出一串并发 timer，每个都 emit "released"，
+      // 导致主进程 endListening 被并发调用、safetyNetTimer 被覆盖成孤儿定时器，
+      // 12s 后误杀下一个活跃会话（真机 09:07:03 实锤）。真防抖 = 只保留最后一次。
+      if (this.releaseDebounceTimer) {
+        clearTimeout(this.releaseDebounceTimer);
+      }
       this.releaseDebounceTimer = setTimeout(() => {
+        this.releaseDebounceTimer = null;
         this.isRecording = false;
         this.pressedKeys.clear();
-        this.releaseDebounceTimer = null;
         this.emit("released");
       }, this.RELEASE_DEBOUNCE_MS);
     } else {

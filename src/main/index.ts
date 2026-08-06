@@ -76,6 +76,8 @@ let autoHideTimer: NodeJS.Timeout | null = null;
 let safetyNetTimer: NodeJS.Timeout | null = null;
 let isOrbVisible = false;
 let isSpeaking = false;
+let isMuted = false; // orb 点击静音后的待命态：TTS 已停但回答保留，点击 orb 可重听
+let lastAnswerSpeech = ""; // 最近一次最终回答的纯文本（muted 后重听用）
 let playingTtsSessionId: number | null = null;  // session ID when TTS playback started
 let toolAckPending = false;
 let wakeWordMonitor: WakeWordMonitor | null = null;
@@ -406,6 +408,11 @@ function stopSpeaking(): void {
 }
 
 function muteCurrentAnswerSpeech(): void {
+  // 已处于 muted 待命态：点击 orb = 重听最后回答，而不是被 isSpeaking 守卫拒绝（旧死锁）
+  if (!isSpeaking && isMuted) {
+    replayLastAnswer();
+    return;
+  }
   if (!isSpeaking || toolAckPending) {
     log("TTS mute request ignored — no final answer is currently being spoken");
     return;
@@ -415,9 +422,49 @@ function muteCurrentAnswerSpeech(): void {
 
   ttsPipeline.stop();
   isSpeaking = false;
+  isMuted = true;
   playingTtsSessionId = null;
 
   sendToFloatWindow(IPC_CHANNELS.TTS_END);
+
+  // 语音连续对话模式：静音后回环到监听，保持免提连续性（与 done 的 isStopped 分支一致）；
+  // 快捷键模式：进入 muted 待命态，悬浮球变换视觉（已静音色板），
+  // 再次点击 orb 可重听，长按快捷键/唤醒词可继续新会话，不再死锁。
+  if (wasWokenByVoice) {
+    log("Continuous voice dialogue: loop back to listening after mute");
+    startVoiceListening();
+    return;
+  }
+  updateState("muted");
+  startAutoHideTimer();
+}
+
+/** 重听被静音的最后回答：重新合成并朗读 lastAnswerSpeech */
+function replayLastAnswer(): void {
+  const text = lastAnswerSpeech;
+  if (!text.trim()) {
+    log("TTS replay ignored — no retained answer");
+    isMuted = false;
+    updateState("idle");
+    startAutoHideTimer();
+    return;
+  }
+  const chunks = splitForPipeline(text);
+  if (chunks.length === 0) {
+    log("TTS replay ignored — answer has no speakable content");
+    isMuted = false;
+    updateState("idle");
+    startAutoHideTimer();
+    return;
+  }
+
+  log(`TTS replay last answer (${text.length} chars, ${chunks.length} chunks)`);
+  isMuted = false;
+  const sessionId = currentSessionId;
+  isSessionActive = true;
+  wakeWordMonitor?.pause();
+  updateState("speaking");
+  synthesizeRemaining(chunks, sessionId);
 }
 
 function abortAllTasks(): void {
@@ -466,6 +513,7 @@ function abortAllTasks(): void {
   wasWokenByVoice = false;
   toolAckPending = false;
   asrResultConsumed = false;
+  isMuted = false;
 
   // 6. Stop recording
   if (getIsRecording()) {
@@ -615,12 +663,23 @@ function endListening(): void {
 
   // Safety net: 云端 ASR fast path 800ms、slow path 10s，用 12s；
   // 本地 whisper-cli 首次推理（弱 CPU + 142MB base 模型）可达数十秒，放宽到 50s，避免转写被中途杀掉。
+  // 先清旧再排新：endListening 可能被并发调用（松键多 keyup 事件），旧 timer 若不清理
+  // 会成为孤儿定时器，12s 后在下一个活跃会话中误触发强制重置（真机 09:07:03 实锤）。
   const useWhisper = config.whisper.shortcutUseWhisper;
+  if (safetyNetTimer) {
+    clearTimeout(safetyNetTimer);
+    safetyNetTimer = null;
+  }
   safetyNetTimer = setTimeout(() => {
     if (isSessionActive) {
       log(`ASR final timeout (${useWhisper ? 50 : 12}s), forcing session reset`);
       isSessionActive = false;
       asrSession = null;
+      // 孤儿定时器场景：本会话 recorder 可能仍处于 RECORDING（用户在孤儿 timer
+      // 误触发前一直按住按键），必须同步停录音，否则麦克风常驻无消费方（真机 09:07 实锤）。
+      if (getIsRecording()) {
+        stopRecording();
+      }
       updateState("idle");
       startAutoHideTimer();
     }
@@ -634,6 +693,7 @@ function startVoiceListening(): void {
   voiceWakeMode = true;
   voiceEnding = false;
   isSessionActive = true;
+  isMuted = false; // 新一轮语音会话：清掉上一轮的静音待命态
   asrResultConsumed = false;
   clearEarlyCommandTimer();
 
@@ -788,6 +848,10 @@ function endVoiceListening(): void {
 
   // 火山 WebSocket 约 0.7s 出结果（12s 安全网）；本地 whisper-cli 弱 CPU 首次推理可达数十秒（50s）
   const voiceSafetyNetMs = voiceUseWhisper ? 50000 : 12000;
+  if (safetyNetTimer) {
+    clearTimeout(safetyNetTimer);
+    safetyNetTimer = null;
+  }
   safetyNetTimer = setTimeout(() => {
     if (isSessionActive) {
       log(`Voice ASR final timeout (${voiceSafetyNetMs}ms), forcing session reset`);
@@ -945,10 +1009,11 @@ function handleLLMRequest(text: string): void {
     startAutoHideTimer();
   });
 
-  llmClient.on("done", ({ display: displayText }: DualChannel) => {
+  llmClient.on("done", ({ display: displayText, speech }: DualChannel) => {
     if (sessionId !== currentSessionId) return;
     log(`LLM done, display length: ${displayText.length}`);
     sendToFloatWindow(IPC_CHANNELS.LLM_DONE);
+    lastAnswerSpeech = speech || displayText;
     if (llmClient) {
       conversation.setMessages(llmClient.getConversation());
     } else {
@@ -974,13 +1039,21 @@ function handleLLMRequest(text: string): void {
       log("TTS muted — skipping remaining speech synthesis");
       ttsPipeline.endSynthesis();
       isSpeaking = false;
+      isMuted = true;
       playingTtsSessionId = null;
       if (wasWokenByVoice) {
-        log("Continuous voice dialogue: loop back to listening");
-        startVoiceListening();
+        if (voiceWakeMode) {
+          // orb 点击静音已回环 startVoiceListening，此处避免二次重建 ASR 会话
+          // （否则旧会话 stop() 与新会话 start() 竞态，且用户刚开口的 partial 会丢）
+          log("Continuous voice dialogue: already listening after mute, skip re-init");
+        } else {
+          log("Continuous voice dialogue: loop back to listening");
+          startVoiceListening();
+        }
       } else {
         isSessionActive = false;
-        updateState("idle");
+        // 保持 muted 待命态：回答已展示，点击 orb 可重听
+        updateState("muted");
         startAutoHideTimer();
       }
       return;
@@ -1425,6 +1498,10 @@ function setupIpc(): void {
 
   ipcMain.on(IPC_CHANNELS.TTS_MUTE_CURRENT, () => {
     muteCurrentAnswerSpeech();
+  });
+
+  ipcMain.on(IPC_CHANNELS.TTS_REPLAY, () => {
+    replayLastAnswer();
   });
 
   ipcMain.on(IPC_CHANNELS.RENDERER_LOG, (_event, message: string) => {

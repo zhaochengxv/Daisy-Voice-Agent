@@ -23,6 +23,7 @@ export const IPC_CHANNELS = {
   TTS_END: "tts:end",
   TTS_PLAY_ENDED: "tts:play-ended",
   TTS_MUTE_CURRENT: "tts:mute-current",
+  TTS_REPLAY: "tts:replay",
   STATE_UPDATE: "state:update",
   SHOW_WINDOW: "window:show",
   HIDE_WINDOW: "window:hide",

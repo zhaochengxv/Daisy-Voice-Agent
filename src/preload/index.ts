@@ -22,6 +22,7 @@ export interface DiriAPI {
   sendRendererLog: (message: string) => void;
   sendTtsPlayEnded: () => void;
   muteCurrentTts: () => void;
+  replayCurrentTts: () => void;
   sendAudioReady: () => void;
   sendAudioStopped: () => void;
   reportAudioDevices: (devices: { deviceId: string; label: string }[]) => void;
@@ -128,6 +129,7 @@ const api: DiriAPI = {
   sendRendererLog: (message: string) => ipcRenderer.send(IPC_CHANNELS.RENDERER_LOG, message),
   sendTtsPlayEnded: () => ipcRenderer.send(IPC_CHANNELS.TTS_PLAY_ENDED),
   muteCurrentTts: () => ipcRenderer.send(IPC_CHANNELS.TTS_MUTE_CURRENT),
+  replayCurrentTts: () => ipcRenderer.send(IPC_CHANNELS.TTS_REPLAY),
   sendAudioReady: () => ipcRenderer.send(IPC_CHANNELS.AUDIO_READY),
   sendAudioStopped: () => ipcRenderer.send(IPC_CHANNELS.AUDIO_STOPPED),
   reportAudioDevices: (devices: { deviceId: string; label: string }[]) => ipcRenderer.send(IPC_CHANNELS.AUDIO_DEVICES_LIST, devices),

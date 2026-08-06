@@ -86,6 +86,23 @@ const palettes = {
       middle: "rgba(239, 68, 68, 0.50)",
       bottomRight: "rgba(251, 191, 36, 0.20)"
     }
+  },
+  muted: {
+    main: "#8B8DA8",
+    mid: "#4a4c66",
+    dark: "#1c1d2e",
+    deepDark: "#0d0e17",
+    highlight: "#D6D7EA",
+    glow: "rgba(139, 141, 168, 0.40)",
+    label: "已静音",
+    glowOpacity: 0.22,
+    filaments: ["#8B8DA8", "#A7A9C4", "#5B5D7A"],
+    blobs: ["#8B8DA8", "#6C6EF5", "#A7A9C4"],
+    linearGradient: {
+      topLeft: "rgba(139, 141, 168, 0.85)",
+      middle: "rgba(108, 110, 245, 0.45)",
+      bottomRight: "rgba(74, 76, 102, 0.30)"
+    }
   }
 };
 
@@ -94,7 +111,8 @@ const targetConfigs = {
   listening: { speed: 0.45, spread: 0.52, pulse: 0.06, rotation: 0.09 },
   thinking:  { speed: 0.65, spread: 0.40, pulse: 0.05, rotation: 0.14 },
   speaking:  { speed: 0.50, spread: 0.48, pulse: 0.08, rotation: 0.08 },
-  error:     { speed: 0.70, spread: 0.55, pulse: 0.10, rotation: 0.18 }
+  error:     { speed: 0.70, spread: 0.55, pulse: 0.10, rotation: 0.18 },
+  muted:     { speed: 0.22, spread: 0.38, pulse: 0.03, rotation: 0.04 }
 };
 
 // ── 运行状态 ──
@@ -715,13 +733,18 @@ function isPointInElement(x, y, el) {
 }
 
 // 点击交互：
-// - 说话中（speaking）：点击任意位置静音当前回答。
+// - 说话中（speaking）：点击任意位置静音当前回答 → 进入 muted 待命态。
+// - 已静音（muted）：点击任意位置重听被静音的最后回答（恢复播放）。
 // - 空闲/思考/错误：点击 orb → 切换录音（开/关一轮语音会话）；
 //   点击文本区 → 打开设置窗口。文本区承载 LLM 输出，避免与录音入口冲突。
 window.addEventListener("click", (e) => {
   if (dragMoved) return; // 拖动后不当作点击
   if (currentState === "speaking") {
     diriAPI.muteCurrentTts();
+    return;
+  }
+  if (currentState === "muted") {
+    diriAPI.replayCurrentTts();
     return;
   }
   const isOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
