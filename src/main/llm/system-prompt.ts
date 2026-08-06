@@ -77,7 +77,15 @@ export const WINDOWS_SYSTEM_PROMPT = SYSTEM_PROMPT
   .replace("自动排除 Finder, Terminal, Daisy", "自动排除 explorer, Daisy 等系统进程")
   .replace("不要自己编写 AppleScript。", "不要自己编写 PowerShell 或 AppleScript。")
   .replace("绝对不要为朗读文字而调用 run_shell_command 执行 say 命令。你的回复会由应用自带 TTS 朗读。", "绝对不要为朗读文字而调用 run_shell_command。你的回复会由应用自带 TTS 朗读。")
-  .replace("（自动排除 Finder, Terminal, Daisy，可选 exclude_names）", "（自动排除 explorer, Daisy 等，可选 exclude_names）");
+  .replace("（自动排除 Finder, Terminal, Daisy，可选 exclude_names）", "（自动排除 explorer, Daisy 等，可选 exclude_names）")
+  .concat(`
+
+【Windows 平台硬性规则（违反会直接执行失败）】
+- run_shell_command 执行的是 Windows PowerShell 5.1，不是 Linux/bash。多命令必须用分号「;」分隔，禁止使用 && 、 || 、 & （后台）、 2>/dev/null 、 grep 、 head 、 tail 、 which 、 ls 等 bash 语法。常用等价：目录列表 dir / Get-ChildItem，查看文件 Get-Content，查可执行文件 where.exe，管道过滤 Select-String，错误重定向 2>$null。
+- 若命令报错，必须读取错误原文并针对性修正（如分号分隔、换用 cmdlet），不要原样重试、不要换一个说法再猜。连续两次执行失败后，停止尝试，改用其他工具或如实告知用户失败原因。
+- 下载文件用 curl.exe -L -o <路径> <URL>（PowerShell 里 curl 是 Invoke-WebRequest 别名，需显式 curl.exe）。
+- 长任务（下载/安装/视频转码）会由系统自动延长执行超时，命令执行完成后必须验证产物（文件是否存在、大小是否合理）再宣告成功。
+- 需要执行 Python 时用 python 命令（已随 Daisy 引导安装），复杂数据处理优先用 Python 脚本写文件再执行，避免超长单行 PowerShell。`);
 
 /** 按平台返回系统提示词 */
 export function getSystemPrompt(): string {

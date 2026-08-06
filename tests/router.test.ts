@@ -3,6 +3,7 @@ import {
   parseKnownSiteSearch,
   findKnownSiteHome,
   isSaveClipboardImageToDesktopCommand,
+  buildWindowsAppsFromOutput,
 } from "../src/main/command/router";
 
 describe("parseKnownSiteSearch", () => {
@@ -67,5 +68,27 @@ describe("isSaveClipboardImageToDesktopCommand", () => {
 
   it("普通命令不误判", () => {
     expect(isSaveClipboardImageToDesktopCommand("打开微信")).toBe(false);
+  });
+});
+
+describe("buildWindowsAppsFromOutput（v1.5.16：Windows 应用索引解析）", () => {
+  it("解析开始菜单应用名并生成别名", () => {
+    const apps = buildWindowsAppsFromOutput("微信\nWeChat\nchrome\n");
+    expect(apps.length).toBe(3);
+    const wechat = apps.find((a) => a.name === "微信");
+    expect(wechat).toBeDefined();
+    expect(wechat!.aliases).toContain("wechat");
+    expect(wechat!.aliases).toContain("微信");
+  });
+
+  it("空行与超长名被过滤", () => {
+    const apps = buildWindowsAppsFromOutput("\n\n  \n" + "X".repeat(61) + "\nNotepad\n");
+    expect(apps.length).toBe(1);
+    expect(apps[0].name).toBe("Notepad");
+  });
+
+  it("大小写不同的同名去重", () => {
+    const apps = buildWindowsAppsFromOutput("chrome\nChrome\nCHROME\n");
+    expect(apps.length).toBe(1);
   });
 });

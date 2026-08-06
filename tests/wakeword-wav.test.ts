@@ -9,7 +9,7 @@ vi.mock("../src/main/asr/whisperServer", () => ({
   whisperServer: { transcribe: transcribeMock },
 }));
 
-import { WakeWordMonitor, isWakeWordMatch } from "../src/main/wakeword/monitor";
+import { WakeWordMonitor, isWakeWordMatch, cleanCommand } from "../src/main/wakeword/monitor";
 
 const SAMPLE_RATE = 16000;
 
@@ -121,5 +121,29 @@ describe("isWakeWordMatch 宽松后缀兜底（v1.5.12 whisper base 前缀误听
   it("不含唤醒词的文本不命中", () => {
     expect(isWakeWordMatch("水用微薄")).toBe(false);
     expect(isWakeWordMatch("以后")).toBe(false);
+  });
+});
+
+describe("cleanCommand 纯标点残留过滤（v1.5.16：'Ei, Daisy.' 只剩 '.' 不再空转）", () => {
+  it("纯标点残留返回空命令", () => {
+    expect(cleanCommand(".")).toBe("");
+    expect(cleanCommand("，。！？")).toBe("");
+    expect(cleanCommand(".")).toBe("");
+    expect(cleanCommand("...")).toBe("");
+  });
+
+  it("有效命令原样返回", () => {
+    expect(cleanCommand("帮我查天气")).toBe("帮我查天气");
+    expect(cleanCommand(" 打开浏览器 ")).toBe("打开浏览器");
+  });
+
+  it("标点前导被剥离后保留有效命令", () => {
+    expect(cleanCommand("，帮我查天气")).toBe("帮我查天气");
+    expect(cleanCommand(". 现在几点了")).toBe("现在几点了");
+  });
+
+  it("空输入返回空", () => {
+    expect(cleanCommand("")).toBe("");
+    expect(cleanCommand("   ")).toBe("");
   });
 });

@@ -1,4 +1,4 @@
-import { exec, execFile } from "node:child_process";
+import { exec, execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
@@ -31,6 +31,65 @@ let lastScanTime = 0;
 const SCAN_INTERVAL_MS = 30 * 60 * 1000; // rescan every 30 minutes
 
 function scanApps(): AppEntry[] {
+  if (isWindows()) return scanWindowsApps();
+  return scanMacApps();
+}
+
+/**
+ * Windows 应用索引：从开始菜单 .lnk + 注册表 App Paths 收集可启动应用名。
+ * 历史 bug：scanApps 只扫 macOS 的 /Applications，Windows 下恒为 0 个应用，
+ * 导致本地命令路由的「打开/关闭应用」能力在 Windows 上完全失效。
+ * 这里只收集名称（匹配用），真实 exe 路径由 windows.openApplication 内部解析。
+ */
+/**
+ * Windows 应用索引：从开始菜单 .lnk + 注册表 App Paths 收集可启动应用名。
+ * 历史 bug：scanApps 只扫 macOS 的 /Applications，Windows 下恒为 0 个应用，
+ * 导致本地命令路由的「打开/关闭应用」能力在 Windows 上完全失效。
+ * 这里只收集名称（匹配用），真实 exe 路径由 windows.openApplication 内部解析。
+ * 导出供单测（Linux CI 上 execFileSync 不可用，直接测解析逻辑）。
+ */
+export function scanWindowsApps(): AppEntry[] {
+  const apps: AppEntry[] = [];
+  const seen = new Set<string>();
+  try {
+    const script = `
+$names = @()
+$roots = @("$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs", "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs")
+foreach ($root in $roots) {
+    if (-not (Test-Path $root)) { continue }
+    $names += Get-ChildItem -Path $root -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
+}
+$names += Get-ItemProperty "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\*" -ErrorAction SilentlyContinue | ForEach-Object { $_.PSChildName -replace '\\.exe$','' }
+$names += Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\*" -ErrorAction SilentlyContinue | ForEach-Object { $_.PSChildName -replace '\\.exe$','' }
+$names | Where-Object { $_ } | Sort-Object -Unique
+`;
+    const result = execFileSyncPowerShell(script);
+    return buildWindowsAppsFromOutput(result);
+  } catch (err) {
+    logError("CommandRouter: Windows app scan failed", err);
+  }
+  return apps;
+}
+
+/**
+ * 纯函数：把 PowerShell 收集到的应用名文本解析为 AppEntry 列表。
+ * 过滤空行/超长名、按小写去重、生成匹配别名。导出供单测。
+ */
+export function buildWindowsAppsFromOutput(output: string): AppEntry[] {
+  const apps: AppEntry[] = [];
+  const seen = new Set<string>();
+  for (const raw of output.split(/\r?\n/)) {
+    const name = raw.trim();
+    if (!name || name.length > 60) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    apps.push({ name, path: "", aliases: generateAliases(name) });
+  }
+  return apps;
+}
+
+function scanMacApps(): AppEntry[] {
   const apps: AppEntry[] = [];
   const seen = new Set<string>();
 
@@ -62,6 +121,16 @@ function scanApps(): AppEntry[] {
     log(`CommandRouter: cache check "${dbg}" → ${found ? `found (${found.name}, aliases: ${found.aliases.join(",")})` : "NOT FOUND"}`);
   }
   return apps;
+}
+
+/** Windows 下用 execFile 同步跑 PowerShell 收集应用名（无 shell，安全） */
+function execFileSyncPowerShell(script: string): string {
+  const root = process.env.SystemRoot || "C:\\Windows";
+  const psPath = path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const out = execFileSync(psPath, [
+    "-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script,
+  ], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, windowsHide: true, timeout: 20000 });
+  return out;
 }
 
 function generateAliases(name: string): string[] {
@@ -142,6 +211,14 @@ function generateAliases(name: string): string[] {
   if (cnMap[lowerKey]) {
     for (const alias of cnMap[lowerKey]) {
       aliases.add(alias.toLowerCase());
+    }
+  }
+
+  // 反向映射：Windows 开始菜单常是中文名（如「微信」），用户说英文（wechat）
+  // 也应能匹配。反向遍历 cnMap，若本名是某英文应用的别名，则补充该英文名。
+  for (const [enName, cnAliases] of Object.entries(cnMap)) {
+    if (cnAliases.some((a) => a.toLowerCase() === lowerKey)) {
+      aliases.add(enName.toLowerCase());
     }
   }
 

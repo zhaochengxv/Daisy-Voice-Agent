@@ -45,7 +45,7 @@ function listProviders(): VisionProvider[] {
       apiKey: config.vision.apiKey,
       baseUrl: config.vision.baseUrl || "https://open.bigmodel.cn/api/paas/v4",
       model: config.vision.model || "glm-4.6v-flash",
-      maxTokens: config.vision.maxTokens || "512",
+      maxTokens: config.vision.maxTokens || "2048",
     });
   }
   if (config.vision.backupApiKey) {
@@ -54,7 +54,7 @@ function listProviders(): VisionProvider[] {
       apiKey: config.vision.backupApiKey,
       baseUrl: config.vision.backupBaseUrl || "https://api.siliconflow.cn/v1",
       model: config.vision.backupModel || "Qwen/Qwen2.5-VL-7B-Instruct",
-      maxTokens: config.vision.maxTokens || "512",
+      maxTokens: config.vision.maxTokens || "2048",
     });
   }
   return providers;
@@ -71,6 +71,37 @@ export function isRetryableVisionError(status: number, body: string): boolean {
     status === 504 ||
     /1302|1305|busy|overload|too many|rate\s*limit|拥挤|繁忙|过载|请求过多|服务繁忙/.test(low)
   );
+}
+
+/**
+ * 拒答文本检测：视觉模型返回「抱歉，我无法查看/分析图像」这类文字时，表示模型
+ * 实际没有解析到图像（备用模型对密集表格/缩略图场景的典型表现），应视为失败
+ * 走重试/换源，而不是把「抱歉」当有效结果返回给 LLM。
+ */
+export function isVisionRefusal(text: string): boolean {
+  const low = text.toLowerCase();
+  return (
+    /抱歉.*(无法|不能|不能帮助|无法帮助).*(查看|分析|识别|处理|理解|读取)|无法查看图像|无法分析图像|无法识别图像|不能分析图片|无法处理该请求|无法处理此请求|我无法.*(查看|识别|分析|处理).*(图像|图片|内容)|not (able|allowed).*(view|analyze|process|see).*(image|picture)|cannot (view|analyze|process|see).*(image|picture)/.test(low) ||
+    (low.length < 40 && /抱歉|无法处理|不能处理/.test(low))
+  );
+}
+
+/**
+ * 首选供应商熔断：免费模型持续高峰期限流时，连续失败 N 次后临时切到备用，
+ * 避免每次都白等首选的重试退避（v1.5.15 真机 18 次首选全拥挤）。
+ */
+const PRIMARY_BREAKER_THRESHOLD = 3; // 连续失败 3 次触发熔断
+const BREAKER_COOLDOWN_MS = 5 * 60 * 1000; // 熔断 5 分钟后恢复尝试首选
+let primaryFailStreak = 0;
+let breakerUntil = 0;
+
+export function resetVisionBreaker(): void {
+  primaryFailStreak = 0;
+  breakerUntil = 0;
+}
+
+function isPrimaryTripped(): boolean {
+  return breakerUntil > Date.now();
 }
 
 function getFfmpegPath(): string {
@@ -128,7 +159,7 @@ async function requestOnce(provider: VisionProvider, content: Array<Record<strin
   return contentStr;
 }
 
-/** 拥挤重试 + 双供应商自动降级：免费模型高峰期 429/503 时自动切备用供应商 */
+/** 拥挤重试 + 双供应商自动降级 + 首选熔断 + 拒答检测：免费模型高峰期 429/503 时自动切备用供应商 */
 async function callVisionModel(imagePaths: string[], question: string): Promise<string> {
   const providers = listProviders();
   if (providers.length === 0) {
@@ -146,25 +177,52 @@ async function callVisionModel(imagePaths: string[], question: string): Promise<
     content.push({ type: "image_url", image_url: { url: formatImageUrl(providers[0].baseUrl, mime, b64) } });
   }
 
+  // 首选熔断中：跳过首选直接走备用，避免每次白等 3 次重试退避
+  const ordered = isPrimaryTripped() && providers.length > 1
+    ? [providers[1], providers[0]]
+    : providers;
+
   let lastErr: unknown;
-  for (const provider of providers) {
-    const maxAttempts = provider === providers[0] ? 3 : 2; // 首选多试，备用兜底试 2 次
+  for (const provider of ordered) {
+    const isPrimary = provider === providers[0];
+    // 首选在熔断中时只给 1 次机会验证是否恢复；非熔断首选重试 3 次，备用 2 次
+    const maxAttempts = isPrimary ? (isPrimaryTripped() ? 1 : 3) : 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const text = await requestOnce(provider, content);
+        if (isVisionRefusal(text)) {
+          lastErr = new Error(`视觉模型返回拒答：${text.slice(0, 120)}`);
+          log(`vision: ${provider.name}(${provider.model}) 拒答，视为失败：${text.slice(0, 80)}`);
+          if (isPrimary) primaryFailStreak++;
+          break; // 拒答不重试同一供应商，直接切下一个
+        }
+        // 成功：清除首选连续失败计数与熔断
+        if (isPrimary) {
+          primaryFailStreak = 0;
+          breakerUntil = 0;
+        }
         if (provider !== providers[0]) log(`vision: 首选拥挤，已降级到备用供应商 ${provider.name}(${provider.model})`);
         return text;
       } catch (err) {
         lastErr = err;
         const { status = 0, body = "" } = err as { status?: number; body?: string };
         const retryable = isRetryableVisionError(status, body);
-        if (!retryable) break; // 非拥挤类错误（如 key 无效/模型不存在），直接切下一个供应商
+        if (!retryable) {
+          if (isPrimary) primaryFailStreak++;
+          break; // 非拥挤类错误（如 key 无效/模型不存在），直接切下一个供应商
+        }
+        if (isPrimary) primaryFailStreak++;
         if (attempt < maxAttempts) {
           await sleep(700 * attempt); // 指数退避，等限流窗口过去
           continue;
         }
         log(`vision: ${provider.name}供应商(${provider.model}) 拥挤重试 ${maxAttempts} 次后仍失败`);
       }
+    }
+    // 首选连续失败达到阈值 → 熔断一段时间，后续请求直接走备用
+    if (isPrimary && primaryFailStreak >= PRIMARY_BREAKER_THRESHOLD) {
+      breakerUntil = Date.now() + BREAKER_COOLDOWN_MS;
+      log(`vision: 首选供应商连续失败 ${primaryFailStreak} 次，熔断 ${BREAKER_COOLDOWN_MS / 1000}s 后恢复尝试`);
     }
     // 当前供应商失败，落到下一个
   }

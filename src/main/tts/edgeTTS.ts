@@ -82,8 +82,12 @@ export class EdgeTTSPlayer {
             lastError = error;
             retries--;
             if (retries > 0) {
-              log(`TTS synthesize failed: ${error instanceof Error ? error.message : String(error)}. Retrying in 500ms (${retries} attempts left)...`);
-              await new Promise(resolve => setTimeout(resolve, 500));
+              // 服务端 503/限流时固定 500ms 重试会连续撞限流（真机日志 02:52-02:56 连发 8 次 503），
+              // 改为指数退避：1.5s → 3s，让限流窗口过去再试
+              const msg = error instanceof Error ? error.message : String(error);
+              const delay = retries === 2 ? 1500 : 3000;
+              log(`TTS synthesize failed: ${msg}. Retrying in ${delay}ms (${retries} attempts left)...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
             }
           }
         }

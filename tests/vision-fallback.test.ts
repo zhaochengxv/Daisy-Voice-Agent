@@ -19,7 +19,7 @@ const fs = await import("node:fs");
 const os = await import("node:os");
 const path = await import("node:path");
 
-import { analyzeImage } from "../src/main/vision/index";
+import { analyzeImage, resetVisionBreaker } from "../src/main/vision/index";
 
 function makeTmpImage(): string {
   const p = path.join(os.tmpdir(), `daisy-vision-fallback-${Date.now()}.png`);
@@ -34,6 +34,7 @@ describe("视觉双供应商自动降级（v1.5.15 拥挤→切备用）", () =>
   beforeEach(() => {
     calls.length = 0;
     tmp = makeTmpImage();
+    resetVisionBreaker();
   });
   afterEach(() => fs.rmSync(tmp, { force: true }));
 

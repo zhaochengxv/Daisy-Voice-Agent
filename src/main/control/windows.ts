@@ -209,6 +209,11 @@ exit 0`;
 }
 
 export async function quitApplication(name: string): Promise<string> {
+  // 自我保护：禁止关闭 Daisy 自身进程（用户说「退下吧」时 LLM 可能传入自身关键字）
+  const lowerName = (name || "").trim().toLowerCase();
+  if (["daisy", "diri", "daisy语音助手", "daisy语音", "自己", "本身", "app", "应用", "这个应用"].includes(lowerName) || /^daisy(\.exe)?$/.test(lowerName)) {
+    return `已保护：不能关闭 Daisy 自身。如需退出，请通过托盘菜单「退出 Daisy」或对我说「退出应用」。`;
+  }
   try {
     const isBrowserKeyword = ["browser", "默认浏览器", "浏览器", "default_browser", "default browser"].includes(name.trim().toLowerCase());
 
@@ -1272,18 +1277,116 @@ Write-Output ("DELETED:" + $count)`;
 }
 
 /**
+ * bash 语法 → PowerShell 5.1 翻译层。
+ *
+ * 真机日志根因：LLM 频繁生成 bash 风格命令塞给 PowerShell 5.1，导致
+ * `runPowerShell failed` 高频失败（`&&`/`||`/`&`/`2>nul`/`grep`/`findstr`），
+ * 25 次失败大量浪费工具步数。此处做「显式翻译 + 明确报错」：
+ * 能安全翻译的常见语法直接转换，翻译不了的在 stderr 里给出 PowerShell 等价
+ * 写法，让 LLM 有依据地修正，而不是反复瞎试。
+ */
+export function translateBashToPowerShell(command: string): { translated: string; warnings: string[] } {
+  let cmd = command;
+  const warnings: string[] = [];
+
+  // `cmd1 && cmd2` → 分号 + $LASTEXITCODE 判定；PowerShell 5.1 无 `&&`
+  // 只处理简单二元串联，避免破坏复杂表达式。
+  cmd = cmd.replace(/\s&&\s/g, (m) => {
+    warnings.push("已将 `&&` 转换为 `;`（PowerShell 5.1 不支持 `&&`）");
+    return ";\n";
+  });
+
+  // 行尾独立 `&& cmd`
+  cmd = cmd.replace(/&&\s+/g, ";\n");
+
+  // `||` → 换行执行（PS 无短路或；给出提示）
+  if (/\s\|\|\s/.test(cmd)) {
+    warnings.push("PowerShell 5.1 不支持 `||`，已转换为换行依次执行");
+    cmd = cmd.replace(/\s\|\|\s/g, ";\n");
+  }
+
+  // 2>nul / 2>/dev/null → 2>$null
+  if (/2>\s*(nul|dev\/null)/i.test(cmd)) {
+    cmd = cmd.replace(/2>\s*(nul|dev\/null)/gi, "2>$null");
+    warnings.push("已将 `2>nul` 转换为 PowerShell 的 `2>$null`");
+  }
+
+  // `/dev/null`（裸）→ $null
+  if (/\/dev\/null/.test(cmd)) {
+    cmd = cmd.replace(/\/dev\/null/g, "$null");
+    warnings.push("已将 `/dev/null` 转换为 `$null`");
+  }
+
+  // `where <cmd>`（查找可执行文件，PS 的 where = Where-Object 别名，会出错）
+  if (/^where\s+\S/.test(cmd.trim()) || /\nwhere\s+\S/.test(cmd)) {
+    cmd = cmd.replace(/(^|\n)(where)\s+(\S+)/gi, "$1where.exe $3");
+    warnings.push("已将 `where` 改为 `where.exe`（PowerShell 中 where 是 Where-Object 别名）");
+  }
+
+  // `which <cmd>` → Get-Command
+  if (/^which\s+\S/.test(cmd.trim()) || /\nwhich\s+\S/.test(cmd)) {
+    cmd = cmd.replace(/(^|\n)(which)\s+(\S+)/gi, "$1(Get-Command $3 -ErrorAction SilentlyContinue).Source");
+    warnings.push("已将 `which` 转换为 `Get-Command`");
+  }
+
+  // `grep ...` → Select-String
+  if (/\bgrep\b/.test(cmd)) {
+    warnings.push("PowerShell 无 `grep`，请改用 `Select-String`");
+  }
+
+  // `findstr`（存在但不是 grep 的直接等价，提示）
+  if (/\bfindstr\b/.test(cmd)) {
+    warnings.push("已保留 `findstr`，如效果不符请改用 `Select-String`");
+  }
+
+  // `head -n N` / `tail -n N` → Select-Object
+  if (/head\s+-?\d*/.test(cmd) || /tail\s+-?\d*/.test(cmd)) {
+    warnings.push("PowerShell 无 `head`/`tail`，请改用 `Select-Object -First N` / `Select-Object -Last N`");
+  }
+
+  return { translated: cmd, warnings };
+}
+
+/** 按命令内容推断超时：下载/安装/转码/视频处理等长任务给足时间，避免 15s 被 kill */
+export function inferShellTimeout(command: string): number {
+  const low = command.toLowerCase();
+  const LONG = 5 * 60 * 1000; // 下载/安装/视频处理
+  const MEDIUM = 2 * 60 * 1000;
+  if (
+    /invoke-webrequest|curl\.exe|bitsadmin|start-bits|wget|winget\s+install|choco\s+install|pip\s+install|npm\s+install|\.exe\s+\/s|\.msi\s|setup\.exe|ffmpeg|ffprobe|yt-dlp|python\s+-m\s+pip/.test(low)
+  ) {
+    return LONG;
+  }
+  if (/start-sleep|sleep|ping\s+-n|python|node\s|npm|\.ps1/.test(low)) {
+    return MEDIUM;
+  }
+  return 30 * 1000; // 常规命令 30s（原 15s 对慢磁盘 dir 也偏紧）
+}
+
+/**
  * Windows Shell 命令执行：经 runPowerShell 无 shell 直传。
  * 用户命令经 DAISY_ARG0 环境变量注入（杜绝拼接注入），脚本内用 Invoke-Expression
  * 真正执行命令本体（此前直接 `$env:DAISY_ARG0` 只回显文本不执行，导致 LLM 收不到任何输出），
  * `2>&1` 合并 stderr 防止命令报错时静默失败，`Set-Location $HOME` 对齐 macOS 的 cwd 语义。
  */
 export async function runShellCommand(command: string): Promise<{ stdout: string; stderr: string }> {
+  const { translated, warnings } = translateBashToPowerShell(command);
+  const fullCommand = warnings.length > 0
+    ? `# 提示：已自动修正 PowerShell 语法 ——\n# ${warnings.join("\n# ")}\n\n${translated}`
+    : translated;
   try {
     const stdout = await runPowerShell(`Set-Location $HOME
-Invoke-Expression $env:DAISY_ARG0 2>&1`, { args: [command], timeoutMs: 30000 });
+Invoke-Expression $env:DAISY_ARG0 2>&1`, { args: [fullCommand], timeoutMs: inferShellTimeout(command) });
     return { stdout, stderr: "" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { stdout: "", stderr: message };
+    // 把语法错误原文透传给 LLM，并附修正指引，让 LLM 有依据地重试
+    let hint = "";
+    if (/InvalidEndOfLine|“&&”|不允许使用运算符|不是此版本中的有效/.test(message)) {
+      hint = "\n[语法提示] PowerShell 5.1 不支持 &&、||、&、2>nul 等 bash 语法：多命令请用分号 ; 分隔，错误输出重定向用 2>$null。请修正命令后重试。";
+    } else if (/Timed out|ETIMEDOUT|timeout/i.test(message)) {
+      hint = "\n[超时提示] 命令执行时间超过限制。请拆分为更小步骤，或用后台方式执行耗时任务后轮询结果。";
+    }
+    return { stdout: "", stderr: message + hint };
   }
 }

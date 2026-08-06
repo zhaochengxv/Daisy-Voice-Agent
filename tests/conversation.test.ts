@@ -25,14 +25,14 @@ describe("ConversationManager", () => {
     expect(msgs[1].content).toBe("你好");
   });
 
-  it("超过 20 条按消息数裁剪最旧（保留系统提示）", () => {
+  it("超过 30 条按消息数裁剪最旧（保留系统提示）", () => {
     const cm = newManager();
-    for (let i = 1; i <= 30; i++) cm.addUserMessage(`消息${i}`);
+    for (let i = 1; i <= 40; i++) cm.addUserMessage(`消息${i}`);
     const msgs = cm.getMessages();
-    // trim 发生在 push 前，最终保留 system + 最新 20 条 + 当前新消息
-    expect(msgs.length).toBe(22);
+    // trim 发生在 push 前，最终保留 system + 最新 30 条 + 当前新消息
+    expect(msgs.length).toBe(32);
     expect(msgs[1].content).toBe("消息10");
-    expect(msgs[21].content).toBe("消息30");
+    expect(msgs[31].content).toBe("消息40");
   });
 
   it("token 超预算时按时间裁剪最旧消息", () => {
@@ -41,9 +41,9 @@ describe("ConversationManager", () => {
       cm.addUserMessage(`M${i}` + "长".repeat(6000));
     }
     const msgs = cm.getMessages();
-    // 每条约 6000 tokens，预算 20000 → 稳定保留 system + 最新 4 条
-    expect(msgs.length).toBe(5);
-    expect(msgs[4].content.startsWith("M8")).toBe(true);
+    // 每条约 6000 tokens，预算 32000 → 稳定保留 system + 最新 6 条
+    expect(msgs.length).toBe(7);
+    expect(msgs[6].content.startsWith("M8")).toBe(true);
   });
 
   it("保留完整有效的工具调用组", () => {

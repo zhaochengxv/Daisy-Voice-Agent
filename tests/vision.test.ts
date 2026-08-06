@@ -20,7 +20,7 @@ const os = await import("node:os");
 const fs = await import("node:fs");
 const path = await import("node:path");
 
-import { isVisionConfigured, analyzeImage, formatImageUrl, isRetryableVisionError } from "../src/main/vision/index";
+import { isVisionConfigured, analyzeImage, formatImageUrl, isRetryableVisionError, isVisionRefusal } from "../src/main/vision/index";
 
 describe("视觉理解工具（v1.5.13 默认智谱 GLM-4.6V-Flash）", () => {
   it("智谱平台传裸 base64，豆包等其他平台传标准 data URI", () => {
@@ -60,5 +60,14 @@ describe("视觉理解工具（v1.5.13 默认智谱 GLM-4.6V-Flash）", () => {
     expect(isRetryableVisionError(200, "当前请求繁忙，请稍后重试")).toBe(true);
     expect(isRetryableVisionError(401, "invalid api key")).toBe(false);
     expect(isRetryableVisionError(404, "model not found")).toBe(false);
+  });
+
+  it("拒答文本判定为失败（v1.5.16：备用模型输出抱歉时换源而不是当结果返回）", () => {
+    expect(isVisionRefusal("抱歉，我无法查看图像内容")).toBe(true);
+    expect(isVisionRefusal("我无法分析这张图片。")).toBe(true);
+    expect(isVisionRefusal("很抱歉，我不能处理图片识别请求")).toBe(true);
+    expect(isVisionRefusal("I'm sorry, I cannot see any image")).toBe(true);
+    expect(isVisionRefusal("这是一张包含山水的图片，有蓝天白云和绿色森林。")).toBe(false);
+    expect(isVisionRefusal("图片中有一杯咖啡，桌子上放着笔记本。")).toBe(false);
   });
 });

@@ -935,6 +935,7 @@ const WINDOWS_TOOL_DESCRIPTIONS: Record<string, string> = {
   search_emails: "通过 Outlook 搜索邮件（需安装 Outlook）",
   convert_document: "转换文档格式（doc/docx/rtf/txt/html/pdf/odt 互转；经 Word，需安装 Microsoft Office）",
   edit_document: "编辑 .docx 文档（删除指定颜色文本；经 Word，需安装 Microsoft Office）",
+  run_shell_command: "执行 Windows PowerShell 命令（PowerShell 5.1）。必须只用 PowerShell 5.1 兼容语法：多命令用分号「;」分隔，禁止使用 Linux/bash 语法（如 &&、||、&、2>/dev/null、grep、head、tail、findstr、where 仅用于查路径、curl 需用 curl.exe）。常用等价写法：用 dir 替代 ls、用 Get-Content 替代 cat、用 where.exe 替代 which、用 Select-String 替代 grep。需要下载文件用「curl.exe -L -o <file> <url>」，安装软件用 Start-Process。长时间运行（下载/安装/转码）会被自动延长超时，无需担心。",
 };
 
 /**

@@ -32,6 +32,8 @@ import {
   openUrl,
   openApplication,
   runShellCommand,
+  translateBashToPowerShell,
+  inferShellTimeout,
 } from "../src/main/control/windows";
 import { isWindows, runPowerShell } from "../src/main/utils/windowsShell";
 
@@ -245,6 +247,66 @@ describe("runShellCommand（v1.5.11 修复 $env:DAISY_ARG0 只回显不执行）
     const result = await runShellCommand("not-a-real-command");
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("command not recognized");
+  });
+});
+
+describe("translateBashToPowerShell（v1.5.16 新增：LLM 生成的 bash 语法自动翻译）", () => {
+  it("&& 翻译为分号并给出警告", () => {
+    const { translated, warnings } = translateBashToPowerShell("dir && echo done");
+    expect(translated).toContain("dir");
+    expect(translated).toContain("echo done");
+    expect(translated).not.toContain("&&");
+    expect(warnings.some((w) => w.includes("&&"))).toBe(true);
+  });
+
+  it("|| 翻译为换行依次执行", () => {
+    const { translated, warnings } = translateBashToPowerShell("taskkill /f /im a.exe || echo killed");
+    expect(translated).not.toContain("||");
+    expect(warnings.some((w) => w.includes("||"))).toBe(true);
+  });
+
+  it("2>nul 与 /dev/null 翻译为 2>$null / $null", () => {
+    const { translated } = translateBashToPowerShell("dir 2>nul && echo ok");
+    expect(translated).toContain("2>$null");
+    expect(translated).toContain("$null");
+    expect(translated).not.toContain("2>nul");
+  });
+
+  it("where 改为 where.exe，which 改为 Get-Command", () => {
+    const { translated } = translateBashToPowerShell("where python && which node");
+    expect(translated).toContain("where.exe python");
+    expect(translated).toContain("Get-Command node");
+  });
+
+  it("grep/head/tail 仅提示不改写", () => {
+    const { translated, warnings } = translateBashToPowerShell("ls | grep foo | head -n 3");
+    expect(warnings.some((w) => w.includes("Select-String"))).toBe(true);
+    expect(warnings.some((w) => w.includes("Select-Object"))).toBe(true);
+    expect(translated).toContain("grep foo");
+  });
+
+  it("纯 PowerShell 命令零改动零警告", () => {
+    const { translated, warnings } = translateBashToPowerShell("Get-Process | Out-String");
+    expect(translated).toBe("Get-Process | Out-String");
+    expect(warnings).toHaveLength(0);
+  });
+});
+
+describe("inferShellTimeout（v1.5.16 新增：超时分层防 15s 误杀长任务）", () => {
+  it("下载/安装/视频处理类命令给 5 分钟", () => {
+    expect(inferShellTimeout("curl.exe -L -o ffmpeg.zip https://x/ffmpeg.zip")).toBe(5 * 60 * 1000);
+    expect(inferShellTimeout("winget install -e --id Python.Python")).toBe(5 * 60 * 1000);
+    expect(inferShellTimeout("ffmpeg -i in.mp4 out.mp4")).toBe(5 * 60 * 1000);
+    expect(inferShellTimeout("yt-dlp https://example.com/video")).toBe(5 * 60 * 1000);
+  });
+
+  it("sleep/等待/脚本类命令给 2 分钟", () => {
+    expect(inferShellTimeout("Start-Sleep -Seconds 60")).toBe(2 * 60 * 1000);
+    expect(inferShellTimeout("python script.py")).toBe(2 * 60 * 1000);
+  });
+
+  it("常规命令 30 秒", () => {
+    expect(inferShellTimeout("Get-Process | Out-String")).toBe(30 * 1000);
   });
 });
 

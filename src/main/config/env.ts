@@ -87,7 +87,7 @@ export const config = {
     apiKey: process.env.VISUAL_API_KEY || "",
     baseUrl: process.env.VISUAL_BASE_URL || "https://open.bigmodel.cn/api/paas/v4",
     model: process.env.VISUAL_MODEL || "glm-4.6v-flash",
-    maxTokens: process.env.VISUAL_MAX_TOKENS || "512",
+    maxTokens: process.env.VISUAL_MAX_TOKENS || "2048",
     // 备用视觉供应商（可选）：免费模型高峰期限流时自动降级切换，保证识别可用。
     // 推荐硅基流动（cloud.siliconflow.cn，注册送额度）：baseUrl=https://api.siliconflow.cn/v1，
     // model=Qwen/Qwen2.5-VL-7B-Instruct（或 Qwen/Qwen3-VL-8B-Instruct）。

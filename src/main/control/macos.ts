@@ -92,6 +92,12 @@ export async function openApplication(name: string): Promise<string> {
 
 export async function quitApplication(name: string): Promise<string> {
   if (isWindows()) return win.quitApplication(name);
+  // 自我保护：禁止关闭 Daisy 自身进程。用户说「退下吧」时 LLM 会调用本工具，
+  // 若传入 Daisy/Diri 等自身关键字，会把自己关掉导致服务 15 分钟不可用（真机日志）。
+  const lowerName = (name || "").trim().toLowerCase();
+  if (["daisy", "diri", "daisy语音助手", "daisy语音", "自己", "本身", "app", "应用", "这个应用"].includes(lowerName) || /^daisy(\.app)?$/.test(lowerName)) {
+    return `已保护：不能关闭 Daisy 自身。如需退出，请通过托盘菜单「退出 Daisy」或对我说「退出应用」。`;
+  }
   try {
     let targetName = name;
     const isBrowserKeyword = ["browser", "默认浏览器", "浏览器", "default_browser", "default browser"].includes(name.trim().toLowerCase());

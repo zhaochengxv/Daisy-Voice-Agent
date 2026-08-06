@@ -23,7 +23,8 @@ import {
 } from "./asr/whisperGpu";
 import { detectNvidiaGpu } from "./control/windows";
 import { DeepSeekClient, DualChannel } from "./llm/deepseek";
-import { ConversationManager, prefetchDesktopPath } from "./llm/conversation";
+import { ConversationManager, prefetchDesktopPath, setPendingSnapshotProvider } from "./llm/conversation";
+import { TaskMemory } from "./llm/taskMemory";
 import { EdgeTTSPlayer, startTTSCleanup } from "./tts/edgeTTS";
 import { TtsPipeline } from "./tts/pipeline";
 import { StreamTts } from "./tts/streamTts";
@@ -83,6 +84,7 @@ let isScreenLocked = false;
 
 const volumeGuard = new VolumeGuard();
 const ttsPipeline = new TtsPipeline();
+const taskMemory = new TaskMemory();
 
 // 崩溃兜底：未捕获异常/拒绝一律落盘，避免静默崩溃无法诊断
 process.on("uncaughtException", (error) => {
@@ -181,6 +183,9 @@ function initialize(): void {
   setupPowerMonitor();
   initCommandRouter();
   conversationHistoryStore.load();
+  // 加载「上次未完成任务」快照：中断后新会话据此恢复任务，用户说「继续」时不再失忆
+  taskMemory.load();
+  setPendingSnapshotProvider(() => taskMemory.getPending());
   // 启用了 whisper 转写（快捷键本地 ASR）或唤醒词时，后台预热 whisper-server，
   // 让首次转写零冷启动（模型加载提前到应用启动阶段完成）。
   if (config.whisper.shortcutUseWhisper || wakeWordMonitor) {
@@ -340,7 +345,6 @@ function ensureConversation(): ConversationManager {
   }
   return conversationManager;
 }
-
 function clearEarlyCommandTimer(): void {
   if (earlyCommandTimer) {
     clearTimeout(earlyCommandTimer);
@@ -923,6 +927,8 @@ function handleLLMRequest(text: string): void {
     }
     conversationHistoryStore.add("daisy", displayText);
     toolAckPending = false;
+    // 正常完成：清除「上次未完成任务」快照，避免旧任务被误当作未完成
+    taskMemory.clear();
 
     if (!displayText.trim()) {
       ttsPipeline.stop();
@@ -985,6 +991,12 @@ function handleLLMRequest(text: string): void {
     stopSpeaking();
     isSessionActive = false;
     wasWokenByVoice = false; // 对话中断，重置语音轮询模式，避免下次 allDone 误回听
+    // 中断时持久化任务上下文：100 步安全阀/异常中止后，新会话据此恢复「没做完的事」
+    if (llmClient) {
+      const conv = llmClient.getConversation();
+      const lastUser = [...conv].reverse().find((m) => m.role === "user")?.content || "";
+      taskMemory.save(conv, lastUser);
+    }
     updateState("error", message);
     startAutoHideTimer();
   });

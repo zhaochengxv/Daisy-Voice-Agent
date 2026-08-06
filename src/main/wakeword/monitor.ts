@@ -73,6 +73,17 @@ export function isWakeWordMatch(text: string): boolean {
   return false;
 }
 
+/**
+ * 清理唤醒词后文的纯标点/空残留（如 "Ei, Daisy." 只剩 "."），避免空命令空转。
+ * 模块级纯函数，供单测与 WakeWordMonitor 内部共用。
+ */
+export function cleanCommand(remaining: string): string {
+  const cleaned = remaining.replace(/^[,，。！!？?、.\s]+/, "").trim();
+  // 只剩标点（无任何有效汉字/字母/数字）视为无命令
+  if (!cleaned || !/[\u4e00-\u9fa5A-Za-z0-9]/.test(cleaned)) return "";
+  return cleaned;
+}
+
 export class WakeWordMonitor extends EventEmitter {
   private state: MonitorState = "idle";
   private audioBuffer: Buffer[] = [];
@@ -291,7 +302,7 @@ export class WakeWordMonitor extends EventEmitter {
         const idx = text.indexOf(match[0]);
         if (idx >= 0) {
           const remaining = text.slice(idx + match[0].length);
-          return remaining.replace(/^[,，。！!？?、\s]+/, "").trim();
+          return cleanCommand(remaining);
         }
       }
     }
@@ -300,7 +311,7 @@ export class WakeWordMonitor extends EventEmitter {
     const suffixMatch = clean.match(LAX_SUFFIX_RE);
     if (suffixMatch && suffixMatch.index !== undefined) {
       const remaining = clean.slice(suffixMatch.index + suffixMatch[0].length);
-      return remaining.replace(/^[,，。！!？?、\s]+/, "").trim();
+      return cleanCommand(remaining);
     }
     return "";
   }

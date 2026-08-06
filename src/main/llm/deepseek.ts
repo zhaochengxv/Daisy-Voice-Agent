@@ -56,7 +56,6 @@ const INSPECTION_TOOLS = new Set([
 ]);
 
 const MAX_CALLS_PER_TOOL = 8;
-
 const CONTINUE_AFTER_TOOLS = new Set([
   "edit_document",
   "write_file",
@@ -89,6 +88,9 @@ function latestUserMessage(messages: ChatMessage[]): string {
   }
   return "";
 }
+
+const LOOP_PREVENT_THRESHOLD = 4; // 同一命令执行 4 次即拦截（v1.5.15 为 7，太宽导致 100 步内空转轮询）
+const SAFETY_GUARD_MAX_STEPS = 100;
 
 function maxCallsForTool(name: string): number {
   return CONTINUE_AFTER_TOOLS.has(name) ? 20 : MAX_CALLS_PER_TOOL;
@@ -183,9 +185,20 @@ export class DeepSeekClient extends EventEmitter {
       return;
     }
     this.chatLoopCount++;
-    if (this.chatLoopCount > 100) {
+    if (this.chatLoopCount > SAFETY_GUARD_MAX_STEPS) {
       log(`DeepSeekClient: Absolute safety guard triggered (count=${this.chatLoopCount}). Forcing break.`);
       this.emit("error", "任务执行步骤过多（已达100步），已自动中止以防死循环。");
+      return;
+    }
+    // 接近上限时注入收敛提示：让 LLM 在硬断之前主动总结进度，避免任务上下文全丢
+    if (this.chatLoopCount === 75) {
+      log(`DeepSeekClient: approaching step limit (75/100), injecting convergence hint`);
+      const conv = [...messages];
+      conv.push({
+        role: "user",
+        content: "(系统提示) 当前任务已执行 75 步，接近步骤上限。请在剩余步骤内收敛：如任务已基本完成，直接总结结果并结束；如卡在循环/等待中，说明卡点并给出用户可手动操作的明确下一步，不要再发起新的重复性检查或安装命令。",
+      });
+      await this.streamChat(conv);
       return;
     }
     const allowedTools = getPlatformTools().filter(
@@ -413,9 +426,9 @@ export class DeepSeekClient extends EventEmitter {
       const currentCount = this.commandExecutionCounts.get(signature) || 0;
       const isWhiteListed = ["capture_screen", "get_current_time"].includes(tc.function.name);
 
-      if (!isWhiteListed && currentCount >= 7) {
+      if (!isWhiteListed && currentCount >= LOOP_PREVENT_THRESHOLD) {
         log(`[LOOP_PREVENT] Command repeated too many times (count=${currentCount}): ${signature}. Intercepting.`);
-        result = `Error: You have already executed this exact command [${tc.function.name}] with these arguments ${currentCount} times in this turn. Repeating it further will yield the identical result. Please stop repeating, try a different approach, or report failure to the user.`;
+        result = `Error: You have already executed this exact command [${tc.function.name}] with these arguments ${currentCount} times in this turn, and it keeps returning the same result. Stop repeating it. Take a different approach now, or summarize current progress and report to the user. Do NOT run this command or similar checking commands again in this turn.`;
       } else {
         if (!isWhiteListed) {
           this.commandExecutionCounts.set(signature, currentCount + 1);
